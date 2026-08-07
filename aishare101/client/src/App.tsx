@@ -36,7 +36,7 @@ import { getFilesFromDroppedItems } from './utils/directory';
 import type { FileWithRelativePath } from './utils/directory';
 
 // Construct server URL dynamically to allow local network testing (e.g. mobile peer on WiFi)
-const SIGNAL_SERVER_URL = `${window.location.protocol}//${window.location.hostname}:4000`;
+const SIGNAL_SERVER_URL = import.meta.env.VITE_SIGNAL_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:4000`;
 
 function App() {
   // Connection states
