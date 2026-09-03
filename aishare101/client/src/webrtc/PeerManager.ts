@@ -7,7 +7,7 @@ export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnecte
 
 export interface PeerManagerEvents {
   onConnectionStateChange: (state: ConnectionState) => void;
-  onRemotePeerChange: (peerId: string | null) => void;
+  onConnectedPeersChange: (peers: string[]) => void;
 }
 
 export class PeerManager {
@@ -16,9 +16,9 @@ export class PeerManager {
   private fileTransferManager: FileTransferManager;
   private events: PeerManagerEvents;
 
-  private pc: RTCPeerConnection | null = null;
-  private dataChannel: RTCDataChannel | null = null;
-  private remotePeerId: string | null = null;
+  // Map of peerId -> RTCPeerConnection and RTCDataChannel
+  private peerConnections: Map<string, RTCPeerConnection> = new Map();
+  private dataChannels: Map<string, RTCDataChannel> = new Map();
   private connectionState: ConnectionState = 'idle';
 
   private iceServers = [
@@ -39,8 +39,8 @@ export class PeerManager {
     this.events = events;
   }
 
-  public getRemotePeerId(): string | null {
-    return this.remotePeerId;
+  public getConnectedPeers(): string[] {
+    return Array.from(this.dataChannels.keys());
   }
 
   public getConnectionState(): ConnectionState {
@@ -52,32 +52,39 @@ export class PeerManager {
     this.events.onConnectionStateChange(state);
   }
 
+  private notifyPeersChanged(): void {
+    const peers = Array.from(this.dataChannels.keys());
+    this.events.onConnectedPeersChange(peers);
+    if (peers.length > 0) {
+      this.setConnectionState('connected');
+    } else if (this.peerConnections.size > 0) {
+      this.setConnectionState('connecting');
+    } else {
+      this.setConnectionState('idle');
+    }
+  }
+
   /**
    * Handle room join updates from the signaling server.
    */
   public handleRoomJoined(peers: string[]): void {
-    console.log('Room joined. Peers in room:', peers);
+    console.log('Room joined. Other peers in room:', peers);
     const myId = this.signalingClient.getSocketId();
     if (!myId) return;
 
     if (peers.length > 0) {
-      // Connect to the first peer in the room (AirShare is designed as a 1-to-1 link for transfers)
-      const targetPeer = peers[0];
-      this.remotePeerId = targetPeer;
-      this.events.onRemotePeerChange(targetPeer);
-
-      // Determine who initiates the connection based on ID alphabetical ordering (prevents collision)
-      if (myId > targetPeer) {
-        console.log(`Initiating connection to ${targetPeer}...`);
-        this.initiateConnection(targetPeer);
-      } else {
-        console.log(`Waiting for offer from ${targetPeer}...`);
-        this.setConnectionState('connecting');
+      this.setConnectionState('connecting');
+      for (const peerId of peers) {
+        if (myId > peerId) {
+          console.log(`[Mesh] Initiating connection to peer ${peerId}...`);
+          this.initiateConnection(peerId);
+        } else {
+          console.log(`[Mesh] Waiting for offer from peer ${peerId}...`);
+        }
       }
     } else {
-      console.log('Waiting for other peers to join...');
+      console.log('Waiting for other peers to join the room...');
       this.cleanupConnection();
-      this.events.onRemotePeerChange(null);
       this.setConnectionState('idle');
     }
   }
@@ -86,19 +93,15 @@ export class PeerManager {
    * Handle new peer entering the room.
    */
   public handlePeerJoined(peerId: string): void {
-    console.log(`Peer joined: ${peerId}`);
+    console.log(`[Mesh] Peer joined room: ${peerId}`);
     const myId = this.signalingClient.getSocketId();
-    if (!myId) return;
-
-    // Set remote peer
-    this.remotePeerId = peerId;
-    this.events.onRemotePeerChange(peerId);
+    if (!myId || peerId === myId) return;
 
     if (myId > peerId) {
-      console.log(`Initiating connection to ${peerId}...`);
+      console.log(`[Mesh] Initiating connection to newly joined peer ${peerId}...`);
       this.initiateConnection(peerId);
     } else {
-      console.log(`Waiting for offer from ${peerId}...`);
+      console.log(`[Mesh] Waiting for offer from newly joined peer ${peerId}...`);
       this.setConnectionState('connecting');
     }
   }
@@ -107,70 +110,58 @@ export class PeerManager {
    * Handle peer departing the room.
    */
   public handlePeerLeft(peerId: string): void {
-    if (peerId === this.remotePeerId) {
-      console.log(`Peer left: ${peerId}`);
-      this.cleanupConnection();
-      this.events.onRemotePeerChange(null);
-      this.setConnectionState('idle');
-    }
+    console.log(`[Mesh] Peer left room: ${peerId}`);
+    this.teardownPeerConnection(peerId);
+    this.notifyPeersChanged();
   }
 
   /**
    * Handle incoming signaling messages.
    */
   public async handleSignal(senderId: string, signalData: any): Promise<void> {
-    if (senderId !== this.remotePeerId) {
-      // Set remote peer if we didn't track it yet
-      this.remotePeerId = senderId;
-      this.events.onRemotePeerChange(senderId);
-    }
-
     try {
       if (signalData.sdp) {
         const sdp = new RTCSessionDescription(signalData.sdp);
         if (sdp.type === 'offer') {
-          console.log('Received SDP offer, building answer...');
+          console.log(`[Mesh] Received SDP offer from ${senderId}, answering...`);
           await this.createAnswer(senderId, sdp);
         } else if (sdp.type === 'answer') {
-          console.log('Received SDP answer, setting remote description...');
-          if (this.pc) {
-            await this.pc.setRemoteDescription(sdp);
+          console.log(`[Mesh] Received SDP answer from ${senderId}, setting remote description...`);
+          const pc = this.peerConnections.get(senderId);
+          if (pc) {
+            await pc.setRemoteDescription(sdp);
           }
         }
       } else if (signalData.candidate) {
-        console.log('Received ICE candidate, adding to peer connection...');
-        if (this.pc) {
-          await this.pc.addIceCandidate(new RTCIceCandidate(signalData.candidate));
+        console.log(`[Mesh] Received ICE candidate from ${senderId}...`);
+        const pc = this.peerConnections.get(senderId);
+        if (pc) {
+          await pc.addIceCandidate(new RTCIceCandidate(signalData.candidate));
         }
       }
     } catch (err) {
-      console.error('Signaling processing error:', err);
-      this.setConnectionState('failed');
+      console.error(`Signaling processing error with ${senderId}:`, err);
     }
   }
 
   /**
-   * Initiates WebRTC peer connection (as initiator).
+   * Initiates WebRTC peer connection to a target peer.
    */
   private async initiateConnection(targetId: string): Promise<void> {
-    this.setConnectionState('connecting');
-    this.createPeerConnection(targetId);
-
-    if (!this.pc) return;
+    const pc = this.getOrCreatePeerConnection(targetId);
 
     // Create custom data channel
-    const channel = this.pc.createDataChannel('airshare-channel', {
+    const channel = pc.createDataChannel(`airshare-channel-${targetId}`, {
       ordered: true,
     });
-    this.setupDataChannel(channel);
+    this.setupDataChannel(targetId, channel);
 
     try {
-      const offer = await this.pc.createOffer();
-      await this.pc.setLocalDescription(offer);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
       this.signalingClient.sendSignal(targetId, { sdp: offer });
     } catch (err) {
-      console.error('Failed to create SDP Offer:', err);
-      this.setConnectionState('failed');
+      console.error(`Failed to create SDP Offer for ${targetId}:`, err);
     }
   }
 
@@ -178,92 +169,80 @@ export class PeerManager {
    * Handles incoming SDP offer and creates SDP answer.
    */
   private async createAnswer(targetId: string, offer: RTCSessionDescription): Promise<void> {
-    this.setConnectionState('connecting');
-    this.createPeerConnection(targetId);
-
-    if (!this.pc) return;
+    const pc = this.getOrCreatePeerConnection(targetId);
 
     try {
-      await this.pc.setRemoteDescription(offer);
-      const answer = await this.pc.createAnswer();
-      await this.pc.setLocalDescription(answer);
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
       this.signalingClient.sendSignal(targetId, { sdp: answer });
     } catch (err) {
-      console.error('Failed to create SDP Answer:', err);
-      this.setConnectionState('failed');
+      console.error(`Failed to create SDP Answer for ${targetId}:`, err);
     }
   }
 
   /**
-   * Creates RTCPeerConnection object and hooks up event listeners.
+   * Retrieves or creates an RTCPeerConnection for a given peer.
    */
-  private createPeerConnection(targetId: string): void {
-    if (this.pc) {
-      this.cleanupConnection();
+  private getOrCreatePeerConnection(targetId: string): RTCPeerConnection {
+    let pc = this.peerConnections.get(targetId);
+    if (pc) {
+      return pc;
     }
 
-    console.log('Creating RTCPeerConnection...');
-    this.pc = new RTCPeerConnection({
+    console.log(`[Mesh] Creating RTCPeerConnection for ${targetId}...`);
+    pc = new RTCPeerConnection({
       iceServers: this.iceServers,
     });
 
-    this.pc.onicecandidate = (event) => {
+    pc.onicecandidate = (event) => {
       if (event.candidate) {
         this.signalingClient.sendSignal(targetId, { candidate: event.candidate });
       }
     };
 
-    this.pc.onconnectionstatechange = () => {
-      if (!this.pc) return;
-      console.log(`WebRTC Connection State: ${this.pc.connectionState}`);
-      switch (this.pc.connectionState) {
-        case 'connected':
-          this.setConnectionState('connected');
-          break;
-        case 'disconnected':
-          this.setConnectionState('disconnected');
-          break;
-        case 'failed':
-          this.setConnectionState('failed');
-          break;
-        case 'closed':
-          this.setConnectionState('idle');
-          break;
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      console.log(`[Mesh] Connection state with ${targetId}: ${pc.connectionState}`);
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        this.teardownPeerConnection(targetId);
+        this.notifyPeersChanged();
       }
     };
 
     // Receiver captures data channel here
-    this.pc.ondatachannel = (event) => {
-      console.log('Received incoming data channel creation.');
-      this.setupDataChannel(event.channel);
+    pc.ondatachannel = (event) => {
+      console.log(`[Mesh] Received incoming data channel from ${targetId}.`);
+      this.setupDataChannel(targetId, event.channel);
     };
+
+    this.peerConnections.set(targetId, pc);
+    return pc;
   }
 
   /**
-   * Binds event handlers on the WebRTC RTCDataChannel.
+   * Binds event handlers on the WebRTC RTCDataChannel for a peer.
    */
-  private setupDataChannel(channel: RTCDataChannel): void {
-    this.dataChannel = channel;
-    this.dataChannel.binaryType = 'arraybuffer';
+  private setupDataChannel(peerId: string, channel: RTCDataChannel): void {
+    channel.binaryType = 'arraybuffer';
+    this.dataChannels.set(peerId, channel);
 
-    this.chatManager.setDataChannel(channel);
-    this.fileTransferManager.setDataChannel(channel);
+    this.chatManager.addDataChannel(peerId, channel);
+    this.fileTransferManager.addDataChannel(peerId, channel);
 
     channel.onopen = () => {
-      console.log('RTCDataChannel opened.');
-      this.setConnectionState('connected');
+      console.log(`[Mesh] RTCDataChannel opened with ${peerId}.`);
+      this.notifyPeersChanged();
     };
 
     channel.onclose = () => {
-      console.log('RTCDataChannel closed.');
-      this.setConnectionState('disconnected');
-      this.chatManager.setDataChannel(null);
-      this.fileTransferManager.setDataChannel(null);
+      console.log(`[Mesh] RTCDataChannel closed with ${peerId}.`);
+      this.teardownPeerConnection(peerId);
+      this.notifyPeersChanged();
     };
 
     channel.onerror = (err) => {
-      console.error('RTCDataChannel error:', err);
-      this.setConnectionState('failed');
+      console.error(`[Mesh] RTCDataChannel error with ${peerId}:`, err);
     };
 
     channel.onmessage = (event) => {
@@ -288,31 +267,53 @@ export class PeerManager {
   }
 
   /**
-   * Clean up and disconnect connection state variables.
+   * Tear down connection with a specific peer.
    */
-  public cleanupConnection(): void {
-    if (this.dataChannel) {
-      this.dataChannel.close();
-      this.dataChannel = null;
+  private teardownPeerConnection(peerId: string): void {
+    const channel = this.dataChannels.get(peerId);
+    if (channel) {
+      try {
+        channel.close();
+      } catch (e) {}
+      this.dataChannels.delete(peerId);
     }
-    if (this.pc) {
-      this.pc.close();
-      this.pc = null;
+
+    const pc = this.peerConnections.get(peerId);
+    if (pc) {
+      try {
+        pc.close();
+      } catch (e) {}
+      this.peerConnections.delete(peerId);
     }
-    this.chatManager.setDataChannel(null);
-    this.fileTransferManager.setDataChannel(null);
-    this.remotePeerId = null;
-    this.setConnectionState('idle');
+
+    this.chatManager.removeDataChannel(peerId);
+    this.fileTransferManager.removeDataChannel(peerId);
   }
 
   /**
-   * Reconnect triggers re-signaling between peers.
+   * Clean up and disconnect all mesh connection state variables.
+   */
+  public cleanupConnection(): void {
+    for (const peerId of Array.from(this.peerConnections.keys())) {
+      this.teardownPeerConnection(peerId);
+    }
+    this.peerConnections.clear();
+    this.dataChannels.clear();
+    this.chatManager.clearDataChannels();
+    this.fileTransferManager.clearDataChannels();
+    this.setConnectionState('idle');
+    this.events.onConnectedPeersChange([]);
+  }
+
+  /**
+   * Reconnect triggers re-signaling across all active peers.
    */
   public reconnect(): void {
-    if (this.remotePeerId) {
-      console.log('Attempting WebRTC reconnection...');
-      this.cleanupConnection();
-      this.initiateConnection(this.remotePeerId);
+    const activePeers = Array.from(this.peerConnections.keys());
+    console.log('[Mesh] Reconnecting all peer connections...');
+    this.cleanupConnection();
+    for (const peerId of activePeers) {
+      this.initiateConnection(peerId);
     }
   }
 }

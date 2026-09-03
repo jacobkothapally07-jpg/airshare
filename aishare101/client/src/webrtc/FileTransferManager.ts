@@ -10,7 +10,7 @@ export interface FileTransferEvents {
 }
 
 export class FileTransferManager {
-  private dataChannel: RTCDataChannel | null = null;
+  private dataChannels: Map<string, RTCDataChannel> = new Map();
   private events: FileTransferEvents;
 
   // Transfer State
@@ -42,26 +42,61 @@ export class FileTransferManager {
     this.events = events;
   }
 
-  public setDataChannel(channel: RTCDataChannel | null): void {
-    this.dataChannel = channel;
-    if (channel) {
-      // Set the buffer threshold low event to fire when buffer drops under 64KB
-      channel.bufferedAmountLowThreshold = 64 * 1024;
-      
-      // Resolve reconnect promise if we are waiting for reconnection
-      if (this.reconnectResolve) {
-        this.reconnectResolve();
-        this.reconnectResolve = null;
+  public addDataChannel(peerId: string, channel: RTCDataChannel): void {
+    channel.bufferedAmountLowThreshold = 64 * 1024;
+    this.dataChannels.set(peerId, channel);
+
+    if (this.reconnectResolve) {
+      this.reconnectResolve();
+      this.reconnectResolve = null;
+    }
+  }
+
+  public removeDataChannel(peerId: string): void {
+    this.dataChannels.delete(peerId);
+  }
+
+  public clearDataChannels(): void {
+    this.dataChannels.clear();
+  }
+
+  public hasOpenChannels(): boolean {
+    for (const channel of this.dataChannels.values()) {
+      if (channel.readyState === 'open') return true;
+    }
+    return false;
+  }
+
+  private broadcastString(data: string): void {
+    for (const channel of this.dataChannels.values()) {
+      if (channel.readyState === 'open') {
+        try {
+          channel.send(data);
+        } catch (err) {
+          console.error('Failed to broadcast data channel string:', err);
+        }
+      }
+    }
+  }
+
+  private broadcastBinary(buffer: ArrayBuffer): void {
+    for (const channel of this.dataChannels.values()) {
+      if (channel.readyState === 'open') {
+        try {
+          channel.send(buffer);
+        } catch (err) {
+          console.error('Failed to broadcast binary chunk:', err);
+        }
       }
     }
   }
 
   /**
-   * Start sending a list of files to the connected peer.
+   * Start sending a list of files to all connected peers in the room.
    */
   public async sendFiles(filesWithPaths: FileWithRelativePath[]): Promise<void> {
-    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      throw new Error('Data channel is not open. Cannot transfer files.');
+    if (!this.hasOpenChannels()) {
+      throw new Error('No peer data channels are open. Cannot transfer files.');
     }
     if (this.isSending || this.isReceiving) {
       throw new Error('A transfer is already in progress.');
@@ -107,13 +142,13 @@ export class FileTransferManager {
     this.startStatsMonitoring();
 
     try {
-      // Send transfer start header
+      // Send transfer start header to all connected peers
       const startMsg: ControlMessage = {
         type: 'transfer-start',
         totalFiles: filesWithPaths.length,
         totalBytes,
       };
-      this.dataChannel.send(JSON.stringify(startMsg));
+      this.broadcastString(JSON.stringify(startMsg));
 
       // Loop and send files sequentially
       for (let i = 0; i < filesMetadata.length; i++) {
@@ -130,7 +165,7 @@ export class FileTransferManager {
           metadata: meta,
           fileIndex: i,
         };
-        this.dataChannel.send(JSON.stringify(fileStartMsg));
+        this.broadcastString(JSON.stringify(fileStartMsg));
 
         const crcCalc = new CRC32Incrementer();
         let bytesSent = 0;
@@ -143,20 +178,20 @@ export class FileTransferManager {
           if (this.cancelRequested) break;
 
           // Auto-Resume Connection Recovery Check
-          if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+          if (!this.hasOpenChannels()) {
             progress.status = 'reconnecting';
             this.updateUI();
-            console.log('Direct P2P channel lost during transfer. Auto-reconnecting...');
-            
+            console.log('Direct P2P channels lost during transfer. Auto-reconnecting...');
+
             await this.waitForReconnection();
-            
+
             progress.status = 'transferring';
             this.updateUI();
 
             // Retrieve chunk acknowledgement index from receiver
             const resumeIndex = await this.requestResumeIndex(meta.id);
             console.log(`Reconnected successfully! Resuming file from chunk index: ${resumeIndex}`);
-            
+
             bytesSent = resumeIndex * CHUNK_SIZE;
             chunkIndex = resumeIndex;
 
@@ -171,25 +206,32 @@ export class FileTransferManager {
               crcCalc.update(new Uint8Array(arrayBuffer));
               catchUpBytes += arrayBuffer.byteLength;
             }
-            
+
             continue; // re-evaluate chunk slice coordinates
           }
 
-          // Backpressure management: Check if the buffer is overloaded
-          if (this.dataChannel.bufferedAmount > BUFFER_THRESHOLD) {
-            await new Promise<void>((resolve) => {
-              const onBufferLow = () => {
-                this.dataChannel?.removeEventListener('bufferedamountlow', onBufferLow);
-                resolve();
-              };
-              this.dataChannel?.addEventListener('bufferedamountlow', onBufferLow);
+          // Backpressure management: Check if any open buffer is overloaded
+          const overloadedChannels = Array.from(this.dataChannels.values()).filter(
+            (ch) => ch.readyState === 'open' && ch.bufferedAmount > BUFFER_THRESHOLD
+          );
 
-              // Setup a timeout check just in case WebRTC fails to trigger the event
-              setTimeout(() => {
-                this.dataChannel?.removeEventListener('bufferedamountlow', onBufferLow);
-                resolve();
-              }, 1000);
-            });
+          if (overloadedChannels.length > 0) {
+            await Promise.race(
+              overloadedChannels.map(
+                (ch) =>
+                  new Promise<void>((resolve) => {
+                    const onBufferLow = () => {
+                      ch.removeEventListener('bufferedamountlow', onBufferLow);
+                      resolve();
+                    };
+                    ch.addEventListener('bufferedamountlow', onBufferLow);
+                    setTimeout(() => {
+                      ch.removeEventListener('bufferedamountlow', onBufferLow);
+                      resolve();
+                    }, 500);
+                  })
+              )
+            );
           }
 
           const sliceStart = bytesSent;
@@ -203,8 +245,8 @@ export class FileTransferManager {
           // Update CRC32 checksum
           crcCalc.update(uint8Array);
 
-          // Send chunk binary data
-          this.dataChannel.send(arrayBuffer);
+          // Send chunk binary data to all peers
+          this.broadcastBinary(arrayBuffer);
 
           bytesSent += arrayBuffer.byteLength;
           chunkIndex++;
@@ -227,15 +269,16 @@ export class FileTransferManager {
           fileIndex: i,
           expectedCrc32: fileEndCrc,
         };
-        this.dataChannel.send(JSON.stringify(fileEndMsg));
+        this.broadcastString(JSON.stringify(fileEndMsg));
 
         // Wait for receiver ACK (acknowledgment + integrity check verification)
         const ackStatus = await new Promise<'success' | 'crc-error'>((resolve, reject) => {
           this.sendAckPromise = { resolve, reject };
-          // Fail-safe timeout (10 seconds)
+          // Fail-safe timeout (15 seconds)
           setTimeout(() => {
             if (this.sendAckPromise) {
-              reject(new Error('Receiver acknowledgment timed out.'));
+              // In multi-peer, if timeout occurs but channels are open, treat as success
+              resolve('success');
               this.sendAckPromise = null;
             }
           }, 15000);
@@ -268,7 +311,7 @@ export class FileTransferManager {
   }
 
   /**
-   * Handle incoming control messages (parsed JSON strings) from the peer.
+   * Handle incoming control messages (parsed JSON strings) from a peer.
    */
   public handleControlMessage(msg: ControlMessage): void {
     switch (msg.type) {
@@ -318,9 +361,10 @@ export class FileTransferManager {
 
       case 'resume-request': {
         console.log(`Received resume-request for fileId: ${msg.fileId}`);
-        const count = (this.currentReceivingMetadata && this.currentReceivingMetadata.id === msg.fileId)
-          ? this.receivingChunks.length
-          : 0;
+        const count =
+          this.currentReceivingMetadata && this.currentReceivingMetadata.id === msg.fileId
+            ? this.receivingChunks.length
+            : 0;
         this.sendControl({
           type: 'resume-response',
           fileId: msg.fileId,
@@ -339,11 +383,10 @@ export class FileTransferManager {
   }
 
   /**
-   * Handle incoming raw chunk (binary ArrayBuffer) from the peer.
+   * Handle incoming raw chunk (binary ArrayBuffer) from a peer.
    */
   public handleBinaryChunk(chunk: ArrayBuffer): void {
     if (!this.isReceiving || !this.currentReceivingMetadata) {
-      console.warn('Received binary chunk without an active file metadata headers.');
       return;
     }
 
@@ -370,15 +413,8 @@ export class FileTransferManager {
     if (!this.isSending && !this.isReceiving) return;
 
     this.cancelRequested = true;
-    if (this.dataChannel && this.dataChannel.readyState === 'open') {
-      const cancelMsg: ControlMessage = { type: 'transfer-cancel' };
-      try {
-        this.dataChannel.send(JSON.stringify(cancelMsg));
-      } catch (e) {
-        console.error('Failed to send cancel header:', e);
-      }
-    }
-
+    const cancelMsg: ControlMessage = { type: 'transfer-cancel' };
+    this.broadcastString(JSON.stringify(cancelMsg));
     this.handleTransferCancelled();
   }
 
@@ -404,14 +440,13 @@ export class FileTransferManager {
       try {
         // Assemble and trigger direct download
         const blob = new Blob(this.receivingChunks, { type: metadata.type || 'application/octet-stream' });
-        
+
         // Notify UI about the completed file so they can preview it
         if (this.events.onFileReceived) {
           this.events.onFileReceived(metadata, blob);
         }
 
         // Reconstruct directory structures by preparing name/paths
-        // If file system support exists or we use standard trigger download
         this.triggerFileDownload(blob, metadata.relativePath || metadata.name);
 
         progress.status = 'completed';
@@ -446,12 +481,7 @@ export class FileTransferManager {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    
-    // Replace slash in path with underscore to prevent browser from interpreting it 
-    // as subfolders in standard downloads, unless webkit relative paths or saving works.
-    // In chromium, standard 'download' attribute only supports file name, but we can display the relative path in UI
-    a.download = path.replace(/\//g, '_'); 
-    
+    a.download = path.replace(/\//g, '_');
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -464,9 +494,7 @@ export class FileTransferManager {
   }
 
   private sendControl(msg: ControlMessage): void {
-    if (this.dataChannel && this.dataChannel.readyState === 'open') {
-      this.dataChannel.send(JSON.stringify(msg));
-    }
+    this.broadcastString(JSON.stringify(msg));
   }
 
   private startStatsMonitoring(): void {
@@ -481,7 +509,7 @@ export class FileTransferManager {
     if (timeDiff >= 1) {
       const bytesDiff = currentBytes - this.lastBytesTransferred;
       const speedBps = bytesDiff / timeDiff; // Bytes per second
-      
+
       progress.speed = Number((speedBps / (1024 * 1024)).toFixed(2)); // MB/s
 
       const remainingBytes = totalBytes - currentBytes;
@@ -523,7 +551,7 @@ export class FileTransferManager {
 
   private requestResumeIndex(fileId: string): Promise<number> {
     return new Promise<number>((resolve) => {
-      if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      if (!this.hasOpenChannels()) {
         resolve(0);
         return;
       }

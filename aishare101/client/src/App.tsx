@@ -8,7 +8,7 @@ import {
   Copy,
   Check,
   User,
-  Lock,
+  Users,
   X,
   AlertCircle,
   File,
@@ -22,7 +22,9 @@ import {
   Smartphone,
   Info,
   Play,
-  Code
+  Code,
+  ClipboardCheck,
+  Share2
 } from 'lucide-react';
 
 import { SignalingClient } from './webrtc/SignalingClient';
@@ -42,7 +44,7 @@ function App() {
   // Connection states
   const [roomCode, setRoomCode] = useState<string>('');
   const [inputRoomCode, setInputRoomCode] = useState<string>('');
-  const [remotePeer, setRemotePeer] = useState<string | null>(null);
+  const [connectedPeers, setConnectedPeers] = useState<string[]>([]);
   const [connState, setConnState] = useState<ConnectionState>('idle');
   const [senderName, setSenderName] = useState<string>(() => {
     // Generate a default random username on load
@@ -73,6 +75,8 @@ function App() {
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const [fingerprint, setFingerprint] = useState<string>('');
+  const [clipboardToast, setClipboardToast] = useState<string | null>(null);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
 
   // Preview states
   interface PreviewFile {
@@ -85,6 +89,11 @@ function App() {
   const [receivedFilesMap, setReceivedFilesMap] = useState<Map<string, { url: string; type: string }>>(() => new Map());
   const [activePreviewTab, setActivePreviewTab] = useState<'run' | 'code'>('run');
 
+  const showToast = (msg: string) => {
+    setClipboardToast(msg);
+    setTimeout(() => setClipboardToast(null), 3000);
+  };
+
   const handleShareClipboard = async () => {
     soundHUD.playClick();
     if (!chatManagerRef.current) return;
@@ -96,9 +105,10 @@ function App() {
       }
       const msg = chatManagerRef.current.sendMessage(text.trim(), senderName, true);
       setMessages((prev) => [...prev, msg]);
+      showToast('📋 Clipboard text broadcast to room!');
     } catch (err) {
       console.error('Clipboard sync failed:', err);
-      alert('Unable to read clipboard. Please check browser permissions.');
+      alert('Unable to auto-read clipboard. Please check browser permissions or paste directly into the chat.');
     }
   };
 
@@ -110,14 +120,15 @@ function App() {
     const { url, type } = fileData;
     let content = '';
     const lowerName = name.toLowerCase();
-    const isText = type.startsWith('text/') || 
-                   lowerName.endsWith('.html') || 
-                   lowerName.endsWith('.css') || 
-                   lowerName.endsWith('.js') || 
-                   lowerName.endsWith('.ts') || 
-                   lowerName.endsWith('.tsx') || 
-                   lowerName.endsWith('.json') || 
-                   lowerName.endsWith('.md');
+    const isText =
+      type.startsWith('text/') ||
+      lowerName.endsWith('.html') ||
+      lowerName.endsWith('.css') ||
+      lowerName.endsWith('.js') ||
+      lowerName.endsWith('.ts') ||
+      lowerName.endsWith('.tsx') ||
+      lowerName.endsWith('.json') ||
+      lowerName.endsWith('.md');
 
     if (isText) {
       try {
@@ -139,6 +150,9 @@ function App() {
     // 2. Initialize Chat Manager
     const chatManager = new ChatManager((msg) => {
       setMessages((prev) => [...prev, msg]);
+      if (msg.isClipboard) {
+        soundHUD.playConnect();
+      }
     });
     chatManagerRef.current = chatManager;
 
@@ -149,7 +163,6 @@ function App() {
       },
       onTransferComplete: () => {
         soundHUD.playSuccess();
-        // Automatically add system notification message
         setMessages((prev) => [
           ...prev,
           {
@@ -182,44 +195,19 @@ function App() {
           newMap.set(metadata.id, { url, type: metadata.type || blob.type });
           return newMap;
         });
-      }
+      },
     });
     fileTransferManagerRef.current = fileTransferManager;
 
-    // 4. Initialize Peer Manager
+    // 4. Initialize Peer Manager (Multi-Peer Mesh)
     const peerManager = new PeerManager(signalingClient, chatManager, fileTransferManager, {
       onConnectionStateChange: (state) => {
         setConnState(state);
-        if (state === 'connected') {
-          soundHUD.playConnect();
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              sender: 'System',
-              text: '🔒 Direct P2P WebRTC DataChannel established securely. Ready to share files.',
-              timestamp: Date.now(),
-              isMe: false,
-            },
-          ]);
-        } else if (state === 'disconnected' || state === 'failed') {
-          soundHUD.playFailure();
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              sender: 'System',
-              text: '🔌 Peer connection closed or failed.',
-              timestamp: Date.now(),
-              isMe: false,
-            },
-          ]);
-        }
       },
-      onRemotePeerChange: (peerId) => {
-        setRemotePeer(peerId);
-        if (!peerId) {
-          setTransfers([]);
+      onConnectedPeersChange: (peers) => {
+        setConnectedPeers(peers);
+        if (peers.length > 0) {
+          soundHUD.playConnect();
         }
       },
     });
@@ -233,7 +221,7 @@ function App() {
           {
             id: crypto.randomUUID(),
             sender: 'System',
-            text: `Joined Room: ${code}. Share this room code to connect.`,
+            text: `Joined Room: ${code}. You can connect multiple devices simultaneously.`,
             timestamp: Date.now(),
             isMe: false,
           },
@@ -242,9 +230,29 @@ function App() {
       },
       onPeerJoined: (peerId) => {
         peerManager.handlePeerJoined(peerId);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            sender: 'System',
+            text: `🟢 New device joined the room! Connecting P2P mesh...`,
+            timestamp: Date.now(),
+            isMe: false,
+          },
+        ]);
       },
       onPeerLeft: (peerId) => {
         peerManager.handlePeerLeft(peerId);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            sender: 'System',
+            text: `🔌 A peer disconnected from the room.`,
+            timestamp: Date.now(),
+            isMe: false,
+          },
+        ]);
       },
       onSignal: (senderId, signalData) => {
         peerManager.handleSignal(senderId, signalData);
@@ -255,7 +263,7 @@ function App() {
       },
       onDisconnect: () => {
         setRoomCode('');
-        setRemotePeer(null);
+        setConnectedPeers([]);
         setConnState('idle');
         setMessages([]);
         setTransfers([]);
@@ -291,7 +299,7 @@ function App() {
         margin: 1.5,
         width: 256,
         color: {
-          dark: '#0f172a',  // Slate 900
+          dark: '#0f172a', // Slate 900
           light: '#f8fafc', // Slate 50
         },
       })
@@ -303,13 +311,13 @@ function App() {
     }
   }, [roomCode]);
 
-  // Generate cryptographic security fingerprint for active connection channel
+  // Generate cryptographic security fingerprint for active room participants
   useEffect(() => {
     const calculateFingerprint = async () => {
       const myId = signalingClientRef.current?.getSocketId();
-      if (connState === 'connected' && roomCode && myId && remotePeer) {
-        // Sort IDs to ensure identical output for both peers
-        const sortedIds = [myId, remotePeer].sort().join('-');
+      if (connState === 'connected' && roomCode && myId && connectedPeers.length > 0) {
+        // Sort all participant IDs to ensure identical output across all peers in room
+        const sortedIds = [myId, ...connectedPeers].sort().join('-');
         const input = `${roomCode}-${sortedIds}`;
         const encoder = new TextEncoder();
         const data = encoder.encode(input);
@@ -323,7 +331,7 @@ function App() {
       }
     };
     calculateFingerprint().catch(console.error);
-  }, [connState, roomCode, remotePeer]);
+  }, [connState, roomCode, connectedPeers]);
 
   // Scroll to bottom of chat when new messages arrive
   useEffect(() => {
@@ -333,14 +341,12 @@ function App() {
   // Periodic radar sound effect when waiting on the landing screen
   useEffect(() => {
     if (roomCode) return;
-    
-    // Play immediately on mount/render
+
     soundHUD.playRadar();
-    
     const interval = setInterval(() => {
       soundHUD.playRadar();
-    }, 6000); // matches the 6s CSS radar animation delay
-    
+    }, 6000);
+
     return () => clearInterval(interval);
   }, [roomCode]);
 
@@ -374,7 +380,7 @@ function App() {
   // Generate a room code and join
   const handleCreateSession = () => {
     soundHUD.playClick();
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Readable alphanumeric
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
     for (let i = 0; i < 6; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -395,8 +401,7 @@ function App() {
     soundHUD.playClick();
     e.preventDefault();
     if (!scanValue.trim()) return;
-    
-    // Check if it's a URL and extract the room parameter, or if it's a direct room code
+
     let parsedCode = scanValue.trim().toUpperCase();
     if (parsedCode.includes('?ROOM=')) {
       const parts = parsedCode.split('?ROOM=');
@@ -422,10 +427,9 @@ function App() {
   // Leave active session room
   const handleLeaveSession = () => {
     signalingClientRef.current?.leaveRoom();
-    // Reset query parameters in browser URL without reloading page
     window.history.replaceState({}, document.title, window.location.pathname);
     setRoomCode('');
-    setRemotePeer(null);
+    setConnectedPeers([]);
     setConnState('idle');
     setMessages([]);
     setTransfers([]);
@@ -483,7 +487,7 @@ function App() {
       const files = Array.from(e.target.files);
       const list: FileWithRelativePath[] = files.map((file) => ({
         file,
-        relativePath: file.name, // standard file input doesn't maintain nested structure
+        relativePath: file.name,
       }));
       await processFiles(list);
     }
@@ -495,7 +499,7 @@ function App() {
       const files = Array.from(e.target.files);
       const list: FileWithRelativePath[] = files.map((file) => ({
         file,
-        // use webkitRelativePath if available, else fallback to name
+        // @ts-ignore
         relativePath: file.webkitRelativePath || file.name,
       }));
       await processFiles(list);
@@ -509,16 +513,36 @@ function App() {
 
   const getStatusColor = (status: ConnectionState) => {
     switch (status) {
-      case 'connected': return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30';
-      case 'connecting': return 'text-amber-400 bg-amber-400/10 border-amber-400/30';
-      case 'failed': return 'text-rose-400 bg-rose-400/10 border-rose-400/30';
-      case 'disconnected': return 'text-zinc-400 bg-zinc-400/10 border-zinc-400/30';
-      default: return 'text-indigo-400 bg-indigo-400/10 border-indigo-400/30';
+      case 'connected':
+        return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30';
+      case 'connecting':
+        return 'text-amber-400 bg-amber-400/10 border-amber-400/30';
+      case 'failed':
+        return 'text-rose-400 bg-rose-400/10 border-rose-400/30';
+      case 'disconnected':
+        return 'text-zinc-400 bg-zinc-400/10 border-zinc-400/30';
+      default:
+        return 'text-indigo-400 bg-indigo-400/10 border-indigo-400/30';
     }
   };
 
   return (
     <div className="min-h-screen flex flex-col font-sans select-none">
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {clipboardToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 bg-gradient-to-r from-sky-500 to-indigo-600 text-white font-semibold text-xs px-5 py-2.5 rounded-full shadow-2xl border border-sky-300/30 flex items-center gap-2"
+          >
+            <ClipboardCheck className="w-4 h-4" />
+            <span>{clipboardToast}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Top Navigation */}
       <header className="glassmorphism sticky top-0 z-40 border-b border-white/5 py-4 px-6 md:px-12 flex justify-between items-center">
         <div className="flex items-center gap-3">
@@ -529,20 +553,35 @@ function App() {
             <h1 className="text-xl font-bold bg-gradient-to-r from-white via-indigo-200 to-purple-300 bg-clip-text text-transparent m-0 select-none">
               AirShare
             </h1>
-            <p className="text-[10px] text-zinc-400 font-medium tracking-wide">P2P ENCRYPTED FILE PORTAL</p>
+            <p className="text-[10px] text-zinc-400 font-medium tracking-wide">MULTI-DEVICE P2P PORTAL</p>
           </div>
         </div>
 
         {roomCode && (
           <div className="flex items-center gap-3">
+            {/* Multi-Peer Status Pill */}
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold ${getStatusColor(connState)}`}>
               <span className="relative flex h-2 w-2">
                 {connState === 'connected' && (
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 )}
-                <span className={`relative inline-flex rounded-full h-2 w-2 ${connState === 'connected' ? 'bg-emerald-400' : connState === 'connecting' ? 'bg-amber-400' : 'bg-zinc-500'}`}></span>
+                <span
+                  className={`relative inline-flex rounded-full h-2 w-2 ${
+                    connState === 'connected'
+                      ? 'bg-emerald-400'
+                      : connState === 'connecting'
+                      ? 'bg-amber-400'
+                      : 'bg-zinc-500'
+                  }`}
+                ></span>
               </span>
-              {connState.toUpperCase()}
+              <span>
+                {connectedPeers.length > 0
+                  ? `${connectedPeers.length + 1} Devices in Mesh`
+                  : connState === 'connecting'
+                  ? 'Connecting...'
+                  : 'Awaiting Peers'}
+              </span>
             </div>
 
             <button
@@ -558,11 +597,9 @@ function App() {
 
       {/* Main Workspace */}
       <main className="flex-1 w-full max-w-[1600px] mx-auto p-4 md:p-8 flex flex-col md:flex-row gap-6 items-center justify-center">
-        
-        {/* Connection Setup (REDESIGNED: Concentric ripples & squircle logo) */}
+        {/* Connection Setup */}
         {!roomCode ? (
           <div className="relative w-full max-w-2xl py-12 flex flex-col items-center justify-center">
-            
             {/* Holographic Radar Concentric Ripples */}
             <div className="absolute inset-0 flex items-center justify-center overflow-hidden pointer-events-none z-0">
               <div className="radar-ring" />
@@ -593,12 +630,10 @@ function App() {
                 <Send className="w-10 h-10 rotate-[-30deg]" />
               </div>
 
-              <h2 className="text-4xl font-extrabold tracking-tight text-white mb-3">
-                AirShare
-              </h2>
-              
+              <h2 className="text-4xl font-extrabold tracking-tight text-white mb-3">AirShare</h2>
+
               <p className="text-zinc-400 text-sm mb-8 max-w-sm leading-relaxed font-medium">
-                A portal between browsers. share the code or scan to transfer files and folders instantly over local network. No servers, no limits.
+                Connect multiple phones, laptops, and tablets in a shared mesh room. Share files, folders, and sync clipboards seamlessly.
               </p>
 
               {/* Create New Room Button */}
@@ -607,7 +642,7 @@ function App() {
                 className="w-full max-w-xs bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white rounded-full py-3.5 px-8 text-sm font-semibold shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 border border-sky-400/20 transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 mb-6"
               >
                 <Activity className="w-4 h-4 text-sky-200 animate-pulse" />
-                Create New Room
+                Create Shared Room
               </button>
 
               <div className="text-[9px] text-zinc-500 font-extrabold uppercase tracking-widest mb-6">
@@ -646,33 +681,33 @@ function App() {
                   </button>
                 </div>
               </form>
-
             </motion.div>
           </div>
         ) : (
           /* Active Session View: Two-pane layout */
           <div className="w-full flex flex-col md:flex-row gap-6 h-[calc(100vh-120px)] md:h-[calc(100vh-130px)]">
-            
-            {/* Left Pane - Chat Room (35% width desktop) */}
+            {/* Left Pane - Coordination Chat & Universal Clipboard (40% width desktop) */}
             <motion.div
               initial={{ opacity: 0, x: -30 }}
               animate={{ opacity: 1, x: 0 }}
               className="flex-[4] flex flex-col glassmorphism rounded-2xl overflow-hidden h-full shadow-2xl"
             >
               {/* Room details header */}
-              <div className="bg-white/5 border-b border-white/5 p-4 flex flex-col gap-2">
+              <div className="bg-white/5 border-b border-white/5 p-4 flex flex-col gap-2.5">
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-2 text-xs font-semibold text-zinc-400">
-                    <Lock className="w-3.5 h-3.5 text-indigo-400" />
-                    P2P COORDINATION CHAT
+                    <Users className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>MULTI-PEER MESH</span>
                   </div>
-                  <span className="text-[10px] text-zinc-500 bg-white/5 border border-white/5 px-2 py-0.5 rounded font-mono">
-                    ID: {senderName} {remotePeer ? `| Connected` : ''}
+                  <span className="text-[10px] text-zinc-400 bg-white/5 border border-white/5 px-2.5 py-0.5 rounded-full font-mono flex items-center gap-1.5">
+                    <User className="w-2.5 h-2.5 text-sky-400" />
+                    You: {senderName}
                   </span>
                 </div>
+
                 <div className="flex justify-between items-center gap-4 bg-black/20 p-2.5 rounded-xl border border-white/5">
                   <div className="flex flex-col">
-                    <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">Active Room</span>
+                    <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">Room Code</span>
                     <span className="text-base font-mono font-bold tracking-wider text-indigo-300">{roomCode}</span>
                   </div>
                   <div className="flex gap-2">
@@ -695,10 +730,50 @@ function App() {
                     </button>
                   </div>
                 </div>
+
+                {/* Connected Peers Badges */}
+                <div className="flex items-center gap-2 flex-wrap text-[10px] text-zinc-400 bg-black/30 p-2 rounded-xl border border-white/5">
+                  <span className="font-semibold text-zinc-500 uppercase tracking-wider">Mesh:</span>
+                  <span className="bg-sky-500/10 text-sky-300 border border-sky-500/20 px-2 py-0.5 rounded-md font-mono font-bold">
+                    You ({senderName})
+                  </span>
+                  {connectedPeers.map((peerId) => (
+                    <span
+                      key={peerId}
+                      className="bg-indigo-500/15 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded-md font-mono flex items-center gap-1"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+                      Peer_{peerId.slice(0, 4)}
+                    </span>
+                  ))}
+                  {connectedPeers.length === 0 && (
+                    <span className="text-zinc-500 italic">Waiting for others to join...</span>
+                  )}
+                </div>
+
+                {/* Universal Clipboard Quick-Sync Action Bar */}
+                <div className="flex items-center justify-between gap-2 bg-gradient-to-r from-sky-500/10 to-indigo-500/10 border border-sky-500/20 p-2.5 rounded-xl">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ClipboardCheck className="w-4 h-4 text-sky-400 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold text-white truncate">Universal Clipboard</p>
+                      <p className="text-[9px] text-zinc-400 truncate">Broadcast your copied text to all devices</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleShareClipboard}
+                    className="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-[10px] px-3 py-1.5 rounded-lg transition duration-200 flex items-center gap-1.5 cursor-pointer shadow-md shrink-0"
+                  >
+                    <Share2 className="w-3 h-3" />
+                    Sync Clipboard
+                  </button>
+                </div>
+
                 {fingerprint && (
-                  <div className="flex items-center gap-1.5 bg-indigo-500/5 border border-indigo-500/10 p-2 rounded-xl text-[10px] text-indigo-300 font-mono justify-center mt-1 select-text">
+                  <div className="flex items-center gap-1.5 bg-indigo-500/5 border border-indigo-500/10 p-1.5 rounded-xl text-[10px] text-indigo-300 font-mono justify-center select-text">
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                    <span>SECURE TUNNEL KEY: {fingerprint}</span>
+                    <span>E2EE MESH KEY: {fingerprint}</span>
                   </div>
                 )}
               </div>
@@ -711,7 +786,13 @@ function App() {
                       key={msg.id}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className={`flex flex-col max-w-[85%] ${msg.sender === 'System' ? 'mx-auto w-full max-w-full text-center my-2' : msg.isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}
+                      className={`flex flex-col max-w-[85%] ${
+                        msg.sender === 'System'
+                          ? 'mx-auto w-full max-w-full text-center my-2'
+                          : msg.isMe
+                          ? 'ml-auto items-end'
+                          : 'mr-auto items-start'
+                      }`}
                     >
                       {msg.sender === 'System' ? (
                         <span className="text-[11px] text-zinc-500 bg-white/5 border border-white/5 px-3 py-1 rounded-full font-medium inline-block">
@@ -720,18 +801,22 @@ function App() {
                       ) : (
                         <>
                           <span className="text-[10px] text-zinc-400 font-bold mb-1.5 px-1 flex items-center gap-1">
-                            <User className="w-2.5 h-2.5" />
+                            <User className="w-2.5 h-2.5 text-sky-400" />
                             {msg.sender}
                           </span>
                           {msg.isClipboard ? (
-                            <div className="p-3.5 bg-cyan-950/40 border border-cyan-500/30 rounded-2xl text-xs shadow-lg leading-relaxed flex flex-col gap-3 min-w-[200px] select-text">
+                            /* Clipboard Card */
+                            <div className="p-3.5 bg-cyan-950/40 border border-cyan-500/30 rounded-2xl text-xs shadow-lg leading-relaxed flex flex-col gap-2.5 min-w-[220px] select-text">
                               <div className="flex items-center justify-between gap-2 border-b border-cyan-500/20 pb-2 text-[10px] text-cyan-400 font-bold uppercase tracking-wider">
                                 <span className="flex items-center gap-1.5">
-                                  <Copy className="w-3.5 h-3.5" />
-                                  Clipboard Synced
+                                  <ClipboardCheck className="w-3.5 h-3.5" />
+                                  Shared Clipboard
+                                </span>
+                                <span className="text-zinc-400 font-mono font-normal">
+                                  {msg.text.length} chars
                                 </span>
                               </div>
-                              <p className="text-zinc-200 line-clamp-3 font-mono break-all bg-black/30 p-2 rounded border border-white/5">
+                              <p className="text-zinc-200 font-mono text-[11px] break-all bg-black/40 p-2.5 rounded-lg border border-white/5 max-h-36 overflow-y-auto">
                                 {msg.text}
                               </p>
                               <button
@@ -739,18 +824,37 @@ function App() {
                                 onClick={async () => {
                                   try {
                                     await navigator.clipboard.writeText(msg.text);
-                                    alert('Copied synced text to local clipboard!');
+                                    setCopiedMsgId(msg.id);
+                                    soundHUD.playClick();
+                                    showToast('✅ Copied text to system clipboard!');
+                                    setTimeout(() => setCopiedMsgId(null), 2000);
                                   } catch (e) {
                                     console.error('Copy failed:', e);
                                   }
                                 }}
-                                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold py-1.5 rounded-lg transition text-[10px] cursor-pointer"
+                                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold py-2 rounded-lg transition text-[11px] cursor-pointer flex items-center justify-center gap-1.5 shadow-md"
                               >
-                                Copy to Device Clipboard
+                                {copiedMsgId === msg.id ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5 text-slate-950" />
+                                    <span>Copied to Device!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3.5 h-3.5 text-slate-950" />
+                                    <span>Copy to Device Clipboard</span>
+                                  </>
+                                )}
                               </button>
                             </div>
                           ) : (
-                            <div className={`p-3 rounded-2xl text-sm shadow-md leading-relaxed ${msg.isMe ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-white/10 border border-white/5 text-zinc-100 rounded-tl-none'}`}>
+                            <div
+                              className={`p-3 rounded-2xl text-sm shadow-md leading-relaxed ${
+                                msg.isMe
+                                  ? 'bg-indigo-600 text-white rounded-tr-none'
+                                  : 'bg-white/10 border border-white/5 text-zinc-100 rounded-tl-none'
+                              }`}
+                            >
                               {msg.text}
                             </div>
                           )}
@@ -767,27 +871,24 @@ function App() {
 
               {/* Chat Form */}
               <form onSubmit={handleSendChat} className="p-4 bg-white/5 border-t border-white/5 flex gap-2">
-                {connState === 'connected' && (
-                  <button
-                    type="button"
-                    onClick={handleShareClipboard}
-                    className="p-2.5 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20 text-sky-400 rounded-xl transition cursor-pointer flex items-center justify-center shrink-0"
-                    title="Send clipboard text to peer"
-                  >
-                    <Copy className="w-5 h-5" />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={handleShareClipboard}
+                  className="p-2.5 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20 text-sky-400 rounded-xl transition cursor-pointer flex items-center justify-center shrink-0"
+                  title="Broadcast clipboard to room"
+                >
+                  <Copy className="w-5 h-5" />
+                </button>
                 <input
                   type="text"
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
-                  placeholder={connState === 'connected' ? "Type a coordinating message..." : "Waiting for peer to chat..."}
-                  disabled={connState !== 'connected'}
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-indigo-500/50 disabled:opacity-40 disabled:cursor-not-allowed transition duration-200"
+                  placeholder="Type a message to broadcast..."
+                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-indigo-500/50 transition duration-200"
                 />
                 <button
                   type="submit"
-                  disabled={!inputText.trim() || connState !== 'connected'}
+                  disabled={!inputText.trim()}
                   className="p-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-xl transition duration-200 shadow-md shadow-indigo-600/10 cursor-pointer flex items-center justify-center"
                 >
                   <Send className="w-5 h-5" />
@@ -795,22 +896,22 @@ function App() {
               </form>
             </motion.div>
 
-            {/* Right Pane - Drag and Drop File Sharing (65% width desktop) */}
+            {/* Right Pane - Multi-Device Drag and Drop File Sharing (60% width desktop) */}
             <motion.div
               initial={{ opacity: 0, x: 30 }}
               animate={{ opacity: 1, x: 0 }}
               className="flex-[6] flex flex-col gap-6 h-full overflow-y-auto"
             >
-              {/* Connection Banner if connecting/waiting */}
-              {connState !== 'connected' && (
+              {/* Connection Banner if awaiting peers */}
+              {connectedPeers.length === 0 && (
                 <div className="glassmorphism rounded-2xl p-6 border-l-4 border-amber-500 flex items-start gap-4 animate-pulse">
                   <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg">
                     <Activity className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="text-sm font-bold text-white">Awaiting Peer Connection</h3>
+                    <h3 className="text-sm font-bold text-white">Room Ready • Awaiting Devices</h3>
                     <p className="text-xs text-zinc-400 mt-1">
-                      WebRTC peer discovery initiated. Share code <span className="font-mono text-amber-300 font-semibold">{roomCode}</span> or let your peer scan the QR code to build the connection.
+                      Share room code <span className="font-mono text-amber-300 font-semibold">{roomCode}</span> or let devices scan the QR code to join this mesh room. Multiple devices can connect simultaneously.
                     </p>
                   </div>
                 </div>
@@ -822,16 +923,18 @@ function App() {
                 onDragOver={handleDrag}
                 onDragLeave={handleDrag}
                 onDrop={handleDrop}
-                className={`glassmorphism rounded-2xl p-8 border-2 border-dashed flex flex-col items-center justify-center gap-4 transition-all duration-300 min-h-[220px] relative overflow-hidden ${connState !== 'connected' ? 'opacity-40 pointer-events-none' : ''} ${dragActive ? 'border-indigo-400 bg-indigo-500/10 shadow-lg scale-[1.01]' : 'border-white/10 bg-white/3'}`}
+                className={`glassmorphism rounded-2xl p-8 border-2 border-dashed flex flex-col items-center justify-center gap-4 transition-all duration-300 min-h-[220px] relative overflow-hidden ${
+                  dragActive ? 'border-indigo-400 bg-indigo-500/10 shadow-lg scale-[1.01]' : 'border-white/10 bg-white/3'
+                }`}
               >
                 <div className="p-4 bg-indigo-500/10 text-indigo-400 rounded-full border border-indigo-400/20 shadow-inner">
                   <UploadCloud className={`w-10 h-10 ${dragActive ? 'scale-110 animate-bounce' : ''}`} />
                 </div>
 
                 <div className="text-center">
-                  <h3 className="text-base font-bold text-white mb-1.5">Drag & Drop Files or Folders Here</h3>
+                  <h3 className="text-base font-bold text-white mb-1.5">Drag & Drop Files or Folders to Broadcast</h3>
                   <p className="text-xs text-zinc-400 max-w-sm mx-auto">
-                    Preserves nested structures automatically. Multi-GB streaming is supported natively with backpressure.
+                    Transfers automatically stream in parallel to all connected devices in this room with CRC32 verification.
                   </p>
                 </div>
 
@@ -840,12 +943,7 @@ function App() {
                   <label className="bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-200 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition duration-200 flex items-center gap-1.5 select-none shadow-md">
                     <File className="w-3.5 h-3.5 text-indigo-400" />
                     Select Files
-                    <input
-                      type="file"
-                      multiple
-                      onChange={handleFileSelect}
-                      className="hidden"
-                    />
+                    <input type="file" multiple onChange={handleFileSelect} className="hidden" />
                   </label>
 
                   <label className="bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-200 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition duration-200 flex items-center gap-1.5 select-none shadow-md">
@@ -870,7 +968,7 @@ function App() {
                   <div className="flex justify-between items-center border-b border-white/5 pb-3">
                     <h3 className="text-sm font-bold text-white flex items-center gap-2">
                       <HardDriveUpload className="w-4 h-4 text-indigo-400" />
-                      Live Peer-to-Peer Queue
+                      Live Multi-Peer Queue
                     </h3>
                     <div className="flex items-center gap-3">
                       <button
@@ -908,7 +1006,17 @@ function App() {
                                 Preview
                               </button>
                             )}
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${t.status === 'completed' ? 'bg-emerald-400/10 text-emerald-400 border border-emerald-400/20' : t.status === 'failed' ? 'bg-rose-400/10 text-rose-400 border border-rose-400/20' : t.status === 'transferring' ? 'bg-indigo-400/10 text-indigo-400 border border-indigo-400/20 animate-pulse' : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'}`}>
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                t.status === 'completed'
+                                  ? 'bg-emerald-400/10 text-emerald-400 border border-emerald-400/20'
+                                  : t.status === 'failed'
+                                  ? 'bg-rose-400/10 text-rose-400 border border-rose-400/20'
+                                  : t.status === 'transferring'
+                                  ? 'bg-indigo-400/10 text-indigo-400 border border-indigo-400/20 animate-pulse'
+                                  : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                              }`}
+                            >
                               {t.status.toUpperCase()}
                             </span>
                           </div>
@@ -926,7 +1034,9 @@ function App() {
                               />
                             </div>
                             <div className="flex justify-between items-center text-[10px] text-zinc-400 font-medium">
-                              <span>{(t.bytesTransferred / (1024 * 1024)).toFixed(2)} MB / {(t.size / (1024 * 1024)).toFixed(2)} MB</span>
+                              <span>
+                                {(t.bytesTransferred / (1024 * 1024)).toFixed(2)} MB / {(t.size / (1024 * 1024)).toFixed(2)} MB
+                              </span>
                               <span className="flex items-center gap-2">
                                 <span>{t.speed > 0 ? `${t.speed} MB/s` : 'Calculating...'}</span>
                                 {t.eta > 0 && <span>• {t.eta}s remaining</span>}
@@ -947,7 +1057,6 @@ function App() {
                 </div>
               )}
             </motion.div>
-
           </div>
         )}
       </main>
@@ -965,7 +1074,7 @@ function App() {
               className="relative w-full max-w-sm glassmorphism border border-sky-500/30 rounded-2xl p-6 overflow-hidden shadow-2xl"
             >
               <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-sky-400 to-transparent animate-pulse" />
-              
+
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-sm font-bold text-white tracking-wider flex items-center gap-2 uppercase">
                   <QrCode className="w-4.5 h-4.5 text-sky-400" />
@@ -991,10 +1100,10 @@ function App() {
                     <Activity className="w-8 h-8 text-sky-400 animate-spin" />
                   </div>
                 )}
-                
+
                 <div className="mt-4 flex gap-4 text-center items-center justify-center text-xs font-semibold text-zinc-400">
                   <Smartphone className="w-4 h-4 text-sky-400" />
-                  <span>Scan with phone to join instantly</span>
+                  <span>Scan with phone or tablet to join mesh</span>
                 </div>
               </div>
 
@@ -1008,7 +1117,7 @@ function App() {
                 </button>
                 <div className="text-[10px] text-zinc-500 bg-white/3 border border-white/5 rounded-lg p-2.5 flex items-start gap-1.5 font-medium leading-relaxed">
                   <Info className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
-                  <span>Direct Sync Link automatically sets active room code and initiates WebRTC peer handshake on load.</span>
+                  <span>Direct Sync Link automatically sets room code and auto-connects mesh P2P handshakes across all devices.</span>
                 </div>
               </div>
             </motion.div>
@@ -1026,12 +1135,12 @@ function App() {
               exit={{ scale: 0.95, opacity: 0 }}
               className="relative w-full max-w-sm glassmorphism border border-indigo-500/30 rounded-2xl p-6 overflow-hidden shadow-2xl"
             >
-              {/* sweeping laser line animation */}
-              <div className="absolute left-0 w-full h-[2px] bg-sky-400/80 shadow-[0_0_10px_2px_rgba(56,189,248,0.5)] z-10 pointer-events-none" 
-                   style={{
-                     animation: 'sweep 3s ease-in-out infinite',
-                     top: '0%'
-                   }} 
+              <div
+                className="absolute left-0 w-full h-[2px] bg-sky-400/80 shadow-[0_0_10px_2px_rgba(56,189,248,0.5)] z-10 pointer-events-none"
+                style={{
+                  animation: 'sweep 3s ease-in-out infinite',
+                  top: '0%',
+                }}
               />
               <style>{`
                 @keyframes sweep {
@@ -1039,7 +1148,7 @@ function App() {
                   50% { top: 90%; }
                 }
               `}</style>
-              
+
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-sm font-bold text-white tracking-wider flex items-center gap-2 uppercase">
                   <Activity className="w-4.5 h-4.5 text-indigo-400 animate-pulse" />
@@ -1055,7 +1164,6 @@ function App() {
 
               {/* High-tech target frame */}
               <div className="relative w-full aspect-square bg-slate-950/80 border border-white/5 rounded-xl flex flex-col items-center justify-center p-6 mb-6 overflow-hidden">
-                {/* corners HUD */}
                 <div className="absolute top-3 left-3 w-4 h-4 border-t-2 border-l-2 border-sky-400" />
                 <div className="absolute top-3 right-3 w-4 h-4 border-t-2 border-r-2 border-sky-400" />
                 <div className="absolute bottom-3 left-3 w-4 h-4 border-b-2 border-l-2 border-sky-400" />
@@ -1065,7 +1173,7 @@ function App() {
                   <QrCode className="w-16 h-16 text-sky-400 mx-auto animate-pulse" />
                   <p className="text-[10px] text-sky-300 font-mono tracking-widest uppercase">SCANNING DIRECT LINK / QR...</p>
                   <p className="text-zinc-500 text-[10px] max-w-[200px] mx-auto leading-relaxed">
-                    Paste the copied share link or scan QR. You can paste the direct sync URL below to parse and join.
+                    Paste the copied share link or scan QR code with your camera to parse and join.
                   </p>
                 </div>
               </div>
@@ -1107,9 +1215,8 @@ function App() {
               exit={{ scale: 0.95, opacity: 0 }}
               className="relative w-full max-w-4xl h-[85vh] glassmorphism border border-sky-500/30 rounded-2xl flex flex-col overflow-hidden shadow-2xl"
             >
-              {/* Top border glowing animation */}
               <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-sky-400 to-transparent animate-pulse" />
-              
+
               {/* Header */}
               <div className="bg-white/5 border-b border-white/5 p-4 flex justify-between items-center shrink-0">
                 <div className="min-w-0">
@@ -1120,7 +1227,7 @@ function App() {
                     File: {previewFile.name} ({previewFile.type || 'unknown type'})
                   </span>
                 </div>
-                
+
                 <button
                   onClick={() => {
                     soundHUD.playClick();
@@ -1140,7 +1247,11 @@ function App() {
                       soundHUD.playClick();
                       setActivePreviewTab('run');
                     }}
-                    className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${activePreviewTab === 'run' ? 'bg-sky-500/25 text-sky-300 border border-sky-500/30' : 'bg-transparent text-zinc-400 hover:text-white border border-transparent'}`}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                      activePreviewTab === 'run'
+                        ? 'bg-sky-500/25 text-sky-300 border border-sky-500/30'
+                        : 'bg-transparent text-zinc-400 hover:text-white border border-transparent'
+                    }`}
                   >
                     <Play className="w-3.5 h-3.5" />
                     Live Run
@@ -1150,7 +1261,11 @@ function App() {
                       soundHUD.playClick();
                       setActivePreviewTab('code');
                     }}
-                    className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${activePreviewTab === 'code' ? 'bg-sky-500/25 text-sky-300 border border-sky-500/30' : 'bg-transparent text-zinc-400 hover:text-white border border-transparent'}`}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                      activePreviewTab === 'code'
+                        ? 'bg-sky-500/25 text-sky-300 border border-sky-500/30'
+                        : 'bg-transparent text-zinc-400 hover:text-white border border-transparent'
+                    }`}
                   >
                     <Code className="w-3.5 h-3.5" />
                     Source Code
@@ -1189,12 +1304,7 @@ function App() {
                       <h4 className="text-sm font-bold text-white">{previewFile.name}</h4>
                       <p className="text-[10px] text-zinc-500 font-mono mt-0.5">Streaming local audio node...</p>
                     </div>
-                    <audio
-                      src={previewFile.url}
-                      controls
-                      autoPlay
-                      className="w-full mt-2"
-                    />
+                    <audio src={previewFile.url} controls autoPlay className="w-full mt-2" />
                   </div>
                 )}
 
