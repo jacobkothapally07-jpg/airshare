@@ -11,7 +11,7 @@
 
 **A decentralized, browser-to-browser WebRTC portal for instant multi-device file streaming and universal clipboard synchronization. Zero middleman servers, no file size limits, and full end-to-end encryption.**
 
-[🚀 Live Demo](https://airshareorg.netlify.app/) • [✨ Features](#-key-features) • [🏗️ Architecture](#-architecture) • [💻 Local Setup](#-getting-started)
+[🚀 Live Demo](https://airsharez.netlify.app/) • [✨ Features](#-key-features) • [🏗️ Architecture](#-architecture) • [💻 Local Setup](#-getting-started)
 
 </div>
 
