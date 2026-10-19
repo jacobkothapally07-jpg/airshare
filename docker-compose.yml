@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  signaling-server:
+    build:
+      context: ./aishare101/server
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+    restart: unless-stopped
+
+  web-client:
+    build:
+      context: ./aishare101/client
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - signaling-server
+    restart: unless-stopped
