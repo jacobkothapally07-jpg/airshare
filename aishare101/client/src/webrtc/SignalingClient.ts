@@ -1,11 +1,12 @@
 import { io, Socket } from 'socket.io-client';
 
 export interface SignalingEvents {
-  onRoomJoined: (roomCode: string, peers: string[]) => void;
+  onRoomJoined: (roomCode: string, peers: string[], hasPin?: boolean) => void;
   onPeerJoined: (peerId: string) => void;
   onPeerLeft: (peerId: string) => void;
   onSignal: (senderId: string, signalData: any) => void;
   onError: (error: string) => void;
+  onPinError?: (info: { roomCode: string; message: string }) => void;
   onDisconnect: () => void;
 }
 
@@ -32,8 +33,16 @@ export class SignalingClient {
       console.log(`Connected to signaling server with socket ID: ${this.socket?.id}`);
     });
 
-    this.socket.on('room-joined', ({ roomCode, peers }: { roomCode: string; peers: string[] }) => {
-      events.onRoomJoined(roomCode, peers);
+    this.socket.on('room-joined', ({ roomCode, peers, hasPin }: { roomCode: string; peers: string[]; hasPin?: boolean }) => {
+      events.onRoomJoined(roomCode, peers, hasPin);
+    });
+
+    this.socket.on('pin-error', (info: { roomCode: string; message: string }) => {
+      if (events.onPinError) {
+        events.onPinError(info);
+      } else {
+        events.onError(info.message);
+      }
     });
 
     this.socket.on('peer-joined', (peerId: string) => {
@@ -57,9 +66,9 @@ export class SignalingClient {
     });
   }
 
-  public joinRoom(roomCode: string): void {
+  public joinRoom(roomCode: string, pin?: string): void {
     if (!this.socket) throw new Error('Socket not connected');
-    this.socket.emit('join-room', roomCode);
+    this.socket.emit('join-room', { roomCode, pin });
   }
 
   public leaveRoom(): void {

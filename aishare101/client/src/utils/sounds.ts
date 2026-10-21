@@ -1,7 +1,20 @@
 class SoundHUD {
   private ctx: AudioContext | null = null;
+  private isMuted: boolean = typeof window !== 'undefined' ? localStorage.getItem('airshare_muted') === 'true' : false;
+
+  public setMuted(muted: boolean): void {
+    this.isMuted = muted;
+    try {
+      localStorage.setItem('airshare_muted', String(muted));
+    } catch {}
+  }
+
+  public getMuted(): boolean {
+    return this.isMuted;
+  }
 
   private initCtx() {
+    if (this.isMuted) return;
     if (!this.ctx) {
       this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
@@ -14,6 +27,7 @@ class SoundHUD {
    * Sound effect for standard buttons/actions click
    */
   public playClick() {
+    if (this.isMuted) return;
     try {
       this.initCtx();
       if (!this.ctx) return;
@@ -38,6 +52,7 @@ class SoundHUD {
    * Synth sound effect for signaling radar search pulses
    */
   public playRadar() {
+    if (this.isMuted) return;
     try {
       this.initCtx();
       if (!this.ctx) return;
@@ -64,6 +79,7 @@ class SoundHUD {
    * Synth arpeggio for successful WebRTC connection links
    */
   public playConnect() {
+    if (this.isMuted) return;
     try {
       this.initCtx();
       if (!this.ctx) return;
@@ -98,6 +114,7 @@ class SoundHUD {
    * Ascending bell chime for a successful transfer verification
    */
   public playSuccess() {
+    if (this.isMuted) return;
     try {
       this.initCtx();
       if (!this.ctx) return;
@@ -129,6 +146,7 @@ class SoundHUD {
    * Buzzing synth tone for a failed check or canceled queue
    */
   public playFailure() {
+    if (this.isMuted) return;
     try {
       this.initCtx();
       if (!this.ctx) return;

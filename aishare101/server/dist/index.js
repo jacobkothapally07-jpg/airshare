@@ -23,15 +23,36 @@ const io = new socket_io_1.Server(httpServer, {
 // Map to track which room a socket is currently in
 // socketId -> roomCode
 const socketRoomMap = new Map();
+// Map to track optional room PIN protection
+// roomCode -> 4-digit PIN
+const roomPinMap = new Map();
 io.on('connection', (socket) => {
     console.log(`Socket connected: ${socket.id}`);
-    // Join a room with roomCode
-    socket.on('join-room', (roomCode) => {
+    // Join a room with roomCode and optional PIN
+    socket.on('join-room', (data) => {
+        const rawCode = typeof data === 'string' ? data : data?.roomCode;
+        const pin = typeof data === 'object' && data?.pin ? data.pin.trim() : undefined;
         // Normalize room code to uppercase
-        const code = roomCode.trim().toUpperCase();
+        const code = (rawCode || '').trim().toUpperCase();
         if (!code) {
             socket.emit('error-msg', 'Invalid room code');
             return;
+        }
+        const room = io.sockets.adapter.rooms.get(code);
+        const existingSize = room ? room.size : 0;
+        const requiredPin = roomPinMap.get(code);
+        // Verify PIN if room is PIN-protected
+        if (requiredPin && requiredPin !== pin) {
+            socket.emit('pin-error', {
+                roomCode: code,
+                message: pin ? 'Incorrect 4-digit PIN entered.' : 'This room is PIN-protected. Please enter the 4-digit PIN.',
+            });
+            return;
+        }
+        // If new room creator provided a PIN, store it
+        if (existingSize === 0 && pin && pin.length >= 4) {
+            roomPinMap.set(code, pin);
+            console.log(`Room ${code} locked with PIN.`);
         }
         console.log(`Socket ${socket.id} joining room: ${code}`);
         // Leave previous room if any
@@ -39,14 +60,18 @@ io.on('connection', (socket) => {
         if (previousRoom) {
             socket.leave(previousRoom);
             socket.to(previousRoom).emit('peer-left', socket.id);
+            const prevRoom = io.sockets.adapter.rooms.get(previousRoom);
+            if (!prevRoom || prevRoom.size === 0) {
+                roomPinMap.delete(previousRoom);
+            }
         }
         socket.join(code);
         socketRoomMap.set(socket.id, code);
         // Get all other sockets currently in this room
-        const room = io.sockets.adapter.rooms.get(code);
-        const existingPeers = room ? Array.from(room).filter(id => id !== socket.id) : [];
+        const currentRoom = io.sockets.adapter.rooms.get(code);
+        const existingPeers = currentRoom ? Array.from(currentRoom).filter(id => id !== socket.id) : [];
         // Tell the joining client who is already in the room
-        socket.emit('room-joined', { roomCode: code, peers: existingPeers });
+        socket.emit('room-joined', { roomCode: code, peers: existingPeers, hasPin: Boolean(roomPinMap.get(code)) });
         // Tell all other clients in the room that a new peer has joined
         socket.to(code).emit('peer-joined', socket.id);
     });
@@ -66,6 +91,10 @@ io.on('connection', (socket) => {
             socket.leave(code);
             socketRoomMap.delete(socket.id);
             socket.to(code).emit('peer-left', socket.id);
+            const room = io.sockets.adapter.rooms.get(code);
+            if (!room || room.size === 0) {
+                roomPinMap.delete(code);
+            }
         }
     });
     // Handle client disconnect
@@ -75,6 +104,10 @@ io.on('connection', (socket) => {
         if (code) {
             socketRoomMap.delete(socket.id);
             socket.to(code).emit('peer-left', socket.id);
+            const room = io.sockets.adapter.rooms.get(code);
+            if (!room || room.size === 0) {
+                roomPinMap.delete(code);
+            }
         }
     });
 });

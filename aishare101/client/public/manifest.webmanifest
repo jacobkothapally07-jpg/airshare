@@ -1,0 +1,20 @@
+{
+  "name": "AirShare | P2P Encrypted File Transfer & Chat",
+  "short_name": "AirShare",
+  "description": "Decentralized, browser-to-browser P2P file streaming and universal clipboard synchronization.",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#09090b",
+  "theme_color": "#6366f1",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

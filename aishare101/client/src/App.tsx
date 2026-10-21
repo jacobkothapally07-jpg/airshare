@@ -24,7 +24,15 @@ import {
   Play,
   Code,
   ClipboardCheck,
-  Share2
+  Share2,
+  Volume2,
+  VolumeX,
+  Lock,
+  Archive,
+  Crown,
+  Sparkles,
+  DownloadCloud,
+  Zap
 } from 'lucide-react';
 
 import { SignalingClient } from './webrtc/SignalingClient';
@@ -36,6 +44,7 @@ import type { ConnectionState } from './webrtc/PeerManager';
 import type { ChatMessage, TransferProgress } from './webrtc/types';
 import { getFilesFromDroppedItems } from './utils/directory';
 import type { FileWithRelativePath } from './utils/directory';
+import { createZipArchive } from './utils/zip';
 
 // Construct server URL dynamically to allow local network testing (e.g. mobile peer on WiFi)
 const SIGNAL_SERVER_URL = import.meta.env.VITE_SIGNAL_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:4000`;
@@ -87,7 +96,27 @@ function App() {
   }
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const [receivedFilesMap, setReceivedFilesMap] = useState<Map<string, { url: string; type: string }>>(() => new Map());
+  const [receivedBlobs, setReceivedBlobs] = useState<Array<{ name: string; blob: Blob }>>([]);
   const [activePreviewTab, setActivePreviewTab] = useState<'run' | 'code'>('run');
+
+  // Audio state
+  const [isMuted, setIsMuted] = useState<boolean>(() => soundHUD.getMuted());
+
+  // Security & PIN states
+  const [roomPin, setRoomPin] = useState<string>('');
+  const [inputPin, setInputPin] = useState<string>('');
+  const [isRoomPinProtected, setIsRoomPinProtected] = useState<boolean>(false);
+  const [showPinModal, setShowPinModal] = useState<boolean>(false);
+  const [pendingPinRoomCode, setPendingPinRoomCode] = useState<string>('');
+  const [pinModalError, setPinModalError] = useState<string>('');
+
+  // PWA Install Prompt state
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
+
+  // Commercial / SaaS Pro Modal state
+  const [showProModal, setShowProModal] = useState<boolean>(false);
+  const [proEmail, setProEmail] = useState<string>('');
+  const [proSubmitted, setProSubmitted] = useState<boolean>(false);
 
   const showToast = (msg: string) => {
     setClipboardToast(msg);
@@ -195,6 +224,7 @@ function App() {
           newMap.set(metadata.id, { url, type: metadata.type || blob.type });
           return newMap;
         });
+        setReceivedBlobs((prev) => [...prev, { name: metadata.name, blob }]);
       },
     });
     fileTransferManagerRef.current = fileTransferManager;
@@ -215,18 +245,27 @@ function App() {
 
     // Connect to Signaling Server
     signalingClient.connect({
-      onRoomJoined: (code, peers) => {
+      onRoomJoined: (code, peers, hasPin) => {
         setRoomCode(code);
+        setIsRoomPinProtected(Boolean(hasPin));
+        setShowPinModal(false);
+        setPinModalError('');
         setMessages([
           {
             id: crypto.randomUUID(),
             sender: 'System',
-            text: `Joined Room: ${code}. You can connect multiple devices simultaneously.`,
+            text: `Joined Room: ${code}${hasPin ? ' 🔒 (PIN Protected)' : ''}. You can connect multiple devices simultaneously.`,
             timestamp: Date.now(),
             isMe: false,
           },
         ]);
         peerManager.handleRoomJoined(peers);
+      },
+      onPinError: ({ roomCode: errCode, message }) => {
+        soundHUD.playFailure();
+        setPendingPinRoomCode(errCode);
+        setPinModalError(message);
+        setShowPinModal(true);
       },
       onPeerJoined: (peerId) => {
         peerManager.handlePeerJoined(peerId);
@@ -284,7 +323,15 @@ function App() {
       }
     }
 
+    // PWA Install prompt listener
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+
     return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
       signalingClient.disconnect();
       peerManager.cleanupConnection();
     };
@@ -350,6 +397,81 @@ function App() {
     return () => clearInterval(interval);
   }, [roomCode]);
 
+  // Audio Mute toggle
+  const toggleMute = () => {
+    const next = !isMuted;
+    setIsMuted(next);
+    soundHUD.setMuted(next);
+    if (!next) soundHUD.playClick();
+    showToast(next ? '🔇 Sound effects muted' : '🔊 Sound effects enabled');
+  };
+
+  // Mobile Native Share or Copy Link
+  const handleNativeShare = async () => {
+    soundHUD.playClick();
+    const shareUrl = `${window.location.protocol}//${window.location.host}/?room=${roomCode}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'AirShare P2P Room',
+          text: `Join my AirShare room (${roomCode}) for instant zero-server P2P file & clipboard transfer:`,
+          url: shareUrl,
+        });
+        return;
+      } catch (err: any) {
+        if (err.name !== 'AbortError') console.error('Share error:', err);
+      }
+    }
+    // Fallback to copy link
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setIsLinkCopied(true);
+      showToast('🔗 Room invite link copied to clipboard!');
+      setTimeout(() => setIsLinkCopied(false), 2000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Batch ZIP Download
+  const handleDownloadAllZip = async () => {
+    soundHUD.playClick();
+    if (receivedBlobs.length === 0) return;
+    try {
+      showToast('📦 Bundling files into ZIP archive...');
+      const zipBlob = await createZipArchive(receivedBlobs);
+      const zipUrl = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = zipUrl;
+      a.download = `AirShare_${roomCode || 'Files'}_Archive.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(zipUrl);
+      soundHUD.playSuccess();
+      showToast(`🎉 Downloaded ${receivedBlobs.length} files as ZIP archive!`);
+    } catch (err) {
+      console.error('ZIP packaging failed:', err);
+      soundHUD.playFailure();
+      alert('Failed to generate ZIP archive.');
+    }
+  };
+
+  // Install PWA
+  const handleInstallPWA = async () => {
+    soundHUD.playClick();
+    if (!deferredInstallPrompt) {
+      showToast('📱 To install: Use browser menu > "Install App" or "Add to Home Screen"');
+      return;
+    }
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+    if (choice.outcome === 'accepted') {
+      setDeferredInstallPrompt(null);
+      showToast('✨ AirShare installed on your device!');
+    }
+  };
+
   // Copy Room Link/Code to Clipboard
   const handleCopyCode = async () => {
     soundHUD.playClick();
@@ -377,7 +499,7 @@ function App() {
     }
   };
 
-  // Generate a room code and join
+  // Generate a room code and join (with optional PIN)
   const handleCreateSession = () => {
     soundHUD.playClick();
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -385,15 +507,23 @@ function App() {
     for (let i = 0; i < 6; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    signalingClientRef.current?.joinRoom(code);
+    signalingClientRef.current?.joinRoom(code, roomPin.trim() || undefined);
   };
 
-  // Join existing session code
+  // Join existing session code (with optional PIN)
   const handleJoinSession = (e?: React.FormEvent) => {
     soundHUD.playClick();
     if (e) e.preventDefault();
     if (!inputRoomCode.trim()) return;
-    signalingClientRef.current?.joinRoom(inputRoomCode.trim().toUpperCase());
+    signalingClientRef.current?.joinRoom(inputRoomCode.trim().toUpperCase(), inputPin.trim() || undefined);
+  };
+
+  // Submit PIN in modal when joining a protected room
+  const handlePinModalSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    soundHUD.playClick();
+    if (!pendingPinRoomCode || !inputPin.trim()) return;
+    signalingClientRef.current?.joinRoom(pendingPinRoomCode, inputPin.trim());
   };
 
   // Submit scan value in simulation scanner
@@ -557,42 +687,73 @@ function App() {
           </div>
         </div>
 
-        {roomCode && (
-          <div className="flex items-center gap-3">
-            {/* Multi-Peer Status Pill */}
-            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold ${getStatusColor(connState)}`}>
-              <span className="relative flex h-2 w-2">
-                {connState === 'connected' && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                )}
-                <span
-                  className={`relative inline-flex rounded-full h-2 w-2 ${
-                    connState === 'connected'
-                      ? 'bg-emerald-400'
-                      : connState === 'connecting'
-                      ? 'bg-amber-400'
-                      : 'bg-zinc-500'
-                  }`}
-                ></span>
-              </span>
-              <span>
-                {connectedPeers.length > 0
-                  ? `${connectedPeers.length + 1} Devices in Mesh`
-                  : connState === 'connecting'
-                  ? 'Connecting...'
-                  : 'Awaiting Peers'}
-              </span>
-            </div>
+        <div className="flex items-center gap-2.5">
+          {/* PWA Install Button */}
+          <button
+            onClick={handleInstallPWA}
+            className="hidden sm:flex items-center gap-1.5 text-xs bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 hover:border-indigo-500/40 px-3 py-1.5 rounded-lg transition duration-200 cursor-pointer font-medium"
+            title="Install AirShare Web App"
+          >
+            <DownloadCloud className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Install App</span>
+          </button>
 
-            <button
-              onClick={handleLeaveSession}
-              className="text-xs bg-white/5 hover:bg-rose-500/20 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 text-zinc-300 px-3 py-1.5 rounded-lg transition duration-200 flex items-center gap-1.5 cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-              Disconnect
-            </button>
-          </div>
-        )}
+          {/* Pro Modal Button */}
+          <button
+            onClick={() => setShowProModal(true)}
+            className="flex items-center gap-1.5 text-xs bg-gradient-to-r from-amber-500/10 to-orange-500/10 hover:from-amber-500/20 hover:to-orange-500/20 text-amber-300 border border-amber-500/20 hover:border-amber-500/40 px-3 py-1.5 rounded-lg transition duration-200 cursor-pointer font-semibold shadow-sm"
+            title="AirShare Pro SaaS Preview"
+          >
+            <Crown className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">AirShare</span> Pro
+          </button>
+
+          {/* Sound HUD Mute Toggle */}
+          <button
+            onClick={toggleMute}
+            className="p-2 bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 rounded-lg transition duration-200 cursor-pointer flex items-center justify-center"
+            title={isMuted ? 'Unmute Sound Effects' : 'Mute Sound Effects'}
+          >
+            {isMuted ? <VolumeX className="w-4 h-4 text-zinc-500" /> : <Volume2 className="w-4 h-4 text-sky-400" />}
+          </button>
+
+          {roomCode && (
+            <>
+              {/* Multi-Peer Status Pill */}
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold ${getStatusColor(connState)}`}>
+                <span className="relative flex h-2 w-2">
+                  {connState === 'connected' && (
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  )}
+                  <span
+                    className={`relative inline-flex rounded-full h-2 w-2 ${
+                      connState === 'connected'
+                        ? 'bg-emerald-400'
+                        : connState === 'connecting'
+                        ? 'bg-amber-400'
+                        : 'bg-zinc-500'
+                    }`}
+                  ></span>
+                </span>
+                <span className="hidden md:inline">
+                  {connectedPeers.length > 0
+                    ? `${connectedPeers.length + 1} Devices in Mesh`
+                    : connState === 'connecting'
+                    ? 'Connecting...'
+                    : 'Awaiting Peers'}
+                </span>
+              </div>
+
+              <button
+                onClick={handleLeaveSession}
+                className="text-xs bg-white/5 hover:bg-rose-500/20 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 text-zinc-300 px-3 py-1.5 rounded-lg transition duration-200 flex items-center gap-1.5 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Disconnect</span>
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       {/* Main Workspace */}
@@ -636,13 +797,36 @@ function App() {
                 Connect multiple phones, laptops, and tablets in a shared mesh room. Share files, folders, and sync clipboards seamlessly.
               </p>
 
+              {/* Optional Room PIN protection */}
+              <div className="w-full max-w-xs mb-3">
+                <div className="flex items-center gap-2 bg-white/5 border border-white/10 focus-within:border-indigo-500/50 rounded-xl px-3 py-2 text-xs transition duration-200">
+                  <Lock className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <input
+                    type="password"
+                    maxLength={4}
+                    value={roomPin}
+                    onChange={(e) => setRoomPin(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Optional 4-Digit Room PIN"
+                    className="bg-transparent text-white placeholder-zinc-500 outline-none text-xs w-full font-mono"
+                  />
+                  {roomPin.length === 4 && (
+                    <span className="text-[9px] text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
+                      PIN SET
+                    </span>
+                  )}
+                </div>
+                <p className="text-[10px] text-zinc-500 mt-1 text-left px-1">
+                  Leave empty for open room, or set 4 digits to password-protect.
+                </p>
+              </div>
+
               {/* Create New Room Button */}
               <button
                 onClick={handleCreateSession}
                 className="w-full max-w-xs bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white rounded-full py-3.5 px-8 text-sm font-semibold shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 border border-sky-400/20 transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 mb-6"
               >
                 <Activity className="w-4 h-4 text-sky-200 animate-pulse" />
-                Create Shared Room
+                <span>Create Shared Room {roomPin.length >= 4 && '🔒'}</span>
               </button>
 
               <div className="text-[9px] text-zinc-500 font-extrabold uppercase tracking-widest mb-6">
@@ -681,6 +865,22 @@ function App() {
                   </button>
                 </div>
               </form>
+
+              {/* Turnkey Monetization Banner Slot */}
+              <div className="mt-8 w-full max-w-xs sm:max-w-sm bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900/40 border border-indigo-500/20 rounded-2xl p-3.5 text-left shadow-lg">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[8px] uppercase tracking-wider font-extrabold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded">
+                    Sponsored • Ad Slot #1
+                  </span>
+                  <span className="text-[9px] text-zinc-500">Monetization Ready</span>
+                </div>
+                <p className="text-xs font-semibold text-zinc-200">
+                  Zero-Knowledge Encrypted Enterprise Mesh Relays
+                </p>
+                <p className="text-[10px] text-zinc-400 mt-0.5 leading-relaxed">
+                  Fast browser-to-browser P2P transfers with $0 server bandwidth overhead.
+                </p>
+              </div>
             </motion.div>
           </div>
         ) : (
@@ -708,9 +908,26 @@ function App() {
                 <div className="flex justify-between items-center gap-4 bg-black/20 p-2.5 rounded-xl border border-white/5">
                   <div className="flex flex-col">
                     <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">Room Code</span>
-                    <span className="text-base font-mono font-bold tracking-wider text-indigo-300">{roomCode}</span>
+                    <span className="text-base font-mono font-bold tracking-wider text-indigo-300 flex items-center gap-1.5">
+                      {roomCode}
+                      {isRoomPinProtected && (
+                        <span title="PIN Protected Room" className="inline-flex items-center text-[10px] text-amber-400 bg-amber-400/10 border border-amber-400/20 px-1.5 py-0.5 rounded-md">
+                          <Lock className="w-2.5 h-2.5 mr-0.5" /> PIN
+                        </span>
+                      )}
+                    </span>
                   </div>
                   <div className="flex gap-2">
+                    {/* Native Share button */}
+                    <button
+                      onClick={handleNativeShare}
+                      className="p-2 bg-gradient-to-r from-sky-500/15 to-indigo-500/15 hover:from-sky-500/25 hover:to-indigo-500/25 text-sky-300 border border-sky-500/20 rounded-lg transition duration-200 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+                      title="Share Room via Mobile Share Sheet or Link"
+                    >
+                      <Share2 className="w-3.5 h-3.5 text-sky-400" />
+                      <span className="hidden sm:inline">Share</span>
+                    </button>
+
                     {/* QR Share code button */}
                     <button
                       onClick={() => setShowQrModal(true)}
@@ -970,12 +1187,22 @@ function App() {
                       <HardDriveUpload className="w-4 h-4 text-indigo-400" />
                       Live Multi-Peer Queue
                     </h3>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2.5">
+                      {receivedBlobs.length > 1 && (
+                        <button
+                          onClick={handleDownloadAllZip}
+                          className="text-xs bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 text-sky-300 border border-sky-500/30 px-2.5 py-1 rounded-md font-semibold transition duration-200 cursor-pointer flex items-center gap-1.5 shadow-sm"
+                          title="Download all received session files as a ZIP archive"
+                        >
+                          <Archive className="w-3.5 h-3.5 text-sky-400" />
+                          <span>ZIP All ({receivedBlobs.length})</span>
+                        </button>
+                      )}
                       <button
                         onClick={handleCancelTransfer}
                         className="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/30 px-2.5 py-1 rounded-md font-semibold transition duration-200 cursor-pointer"
                       >
-                        Cancel Transfer
+                        Cancel
                       </button>
                     </div>
                   </div>
@@ -1370,6 +1597,174 @@ function App() {
                     </div>
                   )}
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* 4. PIN Protection Dialog Modal */}
+      <AnimatePresence>
+        {showPinModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative w-full max-w-sm glassmorphism border border-indigo-500/30 rounded-2xl p-6 shadow-2xl text-center"
+            >
+              <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <Lock className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-white mb-1">Protected Room</h3>
+              <p className="text-xs text-zinc-400 mb-4">
+                Room <span className="font-mono text-indigo-300 font-bold">{pendingPinRoomCode}</span> requires a 4-digit PIN to join.
+              </p>
+
+              {pinModalError && (
+                <div className="text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2 rounded-lg mb-4">
+                  {pinModalError}
+                </div>
+              )}
+
+              <form onSubmit={handlePinModalSubmit} className="space-y-4">
+                <input
+                  type="password"
+                  maxLength={4}
+                  autoFocus
+                  value={inputPin}
+                  onChange={(e) => setInputPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Enter 4-Digit PIN"
+                  className="w-full bg-white/5 border border-white/10 focus:border-indigo-500/50 rounded-xl px-4 py-2.5 text-center text-white font-mono tracking-[0.5em] text-lg font-bold outline-none"
+                />
+
+                <div className="flex gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPinModal(false);
+                      setInputPin('');
+                    }}
+                    className="flex-1 bg-white/5 hover:bg-white/10 text-zinc-300 font-semibold py-2.5 rounded-xl text-xs transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={inputPin.length < 4}
+                    className="flex-1 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 disabled:opacity-40 text-white font-bold py-2.5 rounded-xl text-xs transition shadow-md shadow-indigo-600/20 cursor-pointer"
+                  >
+                    Unlock & Join
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* 5. AirShare Pro SaaS Tier Showcase Modal */}
+      <AnimatePresence>
+        {showProModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative w-full max-w-lg glassmorphism border border-amber-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl overflow-hidden"
+            >
+              <div className="absolute top-0 right-0 p-4">
+                <button
+                  onClick={() => setShowProModal(false)}
+                  className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-white/5 transition cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 mb-2 text-amber-400 font-semibold text-xs tracking-wider uppercase">
+                <Crown className="w-4 h-4" />
+                <span>Commercial SaaS Upgrade</span>
+              </div>
+
+              <h3 className="text-2xl font-black text-white mb-2 tracking-tight">
+                AirShare Pro & Enterprise
+              </h3>
+              <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+                Unlock high-throughput dedicated multi-channel relays, branded company vanity links, and unexpiring rooms.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+                <div className="bg-white/5 border border-white/5 p-3.5 rounded-xl text-left">
+                  <div className="flex items-center gap-2 text-white font-bold text-xs mb-1">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    Custom Vanity URLs
+                  </div>
+                  <p className="text-[10px] text-zinc-400">
+                    Host branded team rooms like <code className="text-amber-300">airshare.live/your-team</code>
+                  </p>
+                </div>
+
+                <div className="bg-white/5 border border-white/5 p-3.5 rounded-xl text-left">
+                  <div className="flex items-center gap-2 text-white font-bold text-xs mb-1">
+                    <Zap className="w-3.5 h-3.5 text-sky-400" />
+                    Dedicated TURN Relays
+                  </div>
+                  <p className="text-[10px] text-zinc-400">
+                    Guaranteed firewall-traversal speeds for enterprise corporate networks.
+                  </p>
+                </div>
+
+                <div className="bg-white/5 border border-white/5 p-3.5 rounded-xl text-left">
+                  <div className="flex items-center gap-2 text-white font-bold text-xs mb-1">
+                    <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                    Permanent Vaults
+                  </div>
+                  <p className="text-[10px] text-zinc-400">
+                    Persistent clipboard history with hardware PIN encryption.
+                  </p>
+                </div>
+
+                <div className="bg-white/5 border border-white/5 p-3.5 rounded-xl text-left">
+                  <div className="flex items-center gap-2 text-white font-bold text-xs mb-1">
+                    <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
+                    Self-Hosted Appliance
+                  </div>
+                  <p className="text-[10px] text-zinc-400">
+                    One-command Docker install for local air-gapped corporate LANs.
+                  </p>
+                </div>
+              </div>
+
+              {/* Early Access / Contact Form */}
+              {proSubmitted ? (
+                <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 p-3.5 rounded-xl text-xs font-semibold text-center">
+                  🎉 Thank you! You're on the early access priority list.
+                </div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!proEmail.trim()) return;
+                    setProSubmitted(true);
+                    showToast('🎉 Added to AirShare Pro priority list!');
+                  }}
+                  className="flex gap-2"
+                >
+                  <input
+                    type="email"
+                    required
+                    value={proEmail}
+                    onChange={(e) => setProEmail(e.target.value)}
+                    placeholder="Enter email for Pro pricing & early access"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-500 outline-none focus:border-amber-400/50"
+                  />
+                  <button
+                    type="submit"
+                    className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl text-xs transition shadow-lg cursor-pointer shrink-0"
+                  >
+                    Notify Me
+                  </button>
+                </form>
+              )}
             </motion.div>
           </div>
         )}
