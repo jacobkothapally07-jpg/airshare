@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import QRCode from 'qrcode';
+import { QrModal } from './QrModal';
 import {
   Send,
   UploadCloud,
@@ -18,9 +18,6 @@ import {
   Activity,
   HardDriveUpload,
   QrCode,
-  Laptop,
-  Smartphone,
-  Info,
   Play,
   Code,
   ClipboardCheck,
@@ -76,12 +73,9 @@ function App() {
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [isCopied, setIsCopied] = useState<boolean>(false);
 
-  // QR and Scanner states
-  const [qrUrl, setQrUrl] = useState<string>('');
+  // QR Mesh Portal states (Unified Show QR & Real Camera Scanner)
   const [showQrModal, setShowQrModal] = useState<boolean>(false);
-  const [showScanner, setShowScanner] = useState<boolean>(false);
-  const [scanValue, setScanValue] = useState<string>('');
-  const [isLinkCopied, setIsLinkCopied] = useState<boolean>(false);
+  const [qrModalTab, setQrModalTab] = useState<'show' | 'scan'>('show');
 
   // References to the Managers
   const signalingClientRef = useRef<SignalingClient | null>(null);
@@ -257,6 +251,16 @@ function App() {
     signalingClient.connect({
       onConnect: () => {
         setIsServerReady(true);
+        // Instant auto-join if URL contains ?room=XXXXXX parameter
+        const params = new URLSearchParams(window.location.search);
+        const roomParam = params.get('room');
+        if (roomParam) {
+          const formattedCode = roomParam.trim().toUpperCase();
+          if (formattedCode.length === 6) {
+            console.log(`Auto-joining room on socket connection: ${formattedCode}`);
+            signalingClient.joinRoom(formattedCode);
+          }
+        }
       },
       onRoomJoined: (code, peers, hasPin) => {
         setRoomCode(code);
@@ -355,23 +359,9 @@ function App() {
     };
   }, []);
 
-  // Generate QR Code when Room Code is established
+  // Auto-close QR modal if user leaves room
   useEffect(() => {
-    if (roomCode) {
-      // The join link that peers can scan
-      const joinUrl = `${window.location.protocol}//${window.location.host}/?room=${roomCode}`;
-      QRCode.toDataURL(joinUrl, {
-        margin: 1.5,
-        width: 256,
-        color: {
-          dark: '#0f172a', // Slate 900
-          light: '#f8fafc', // Slate 50
-        },
-      })
-        .then((url) => setQrUrl(url))
-        .catch((err) => console.error('QR code generation error:', err));
-    } else {
-      setQrUrl('');
+    if (!roomCode) {
       setShowQrModal(false);
     }
   }, [roomCode]);
@@ -443,9 +433,9 @@ function App() {
     // Fallback to copy link
     try {
       await navigator.clipboard.writeText(shareUrl);
-      setIsLinkCopied(true);
+      setIsCopied(true);
       showToast('🔗 Room invite link copied to clipboard!');
-      setTimeout(() => setIsLinkCopied(false), 2000);
+      setTimeout(() => setIsCopied(false), 2000);
     } catch (e) {
       console.error(e);
     }
@@ -503,19 +493,6 @@ function App() {
     }
   };
 
-  // Copy Full Share Link to Clipboard
-  const handleCopyLink = async () => {
-    soundHUD.playClick();
-    if (!roomCode) return;
-    try {
-      const joinUrl = `${window.location.protocol}//${window.location.host}/?room=${roomCode}`;
-      await navigator.clipboard.writeText(joinUrl);
-      setIsLinkCopied(true);
-      setTimeout(() => setIsLinkCopied(false), 2000);
-    } catch (e) {
-      console.error('Copy failed:', e);
-    }
-  };
 
   // Generate a room code and join (with optional PIN)
   const handleCreateSession = () => {
@@ -548,33 +525,6 @@ function App() {
     signalingClientRef.current?.joinRoom(pendingPinRoomCode, inputPin.trim());
   };
 
-  // Submit scan value in simulation scanner
-  const handleScanSubmit = (e: React.FormEvent) => {
-    soundHUD.playClick();
-    e.preventDefault();
-    if (!scanValue.trim()) return;
-
-    let parsedCode = scanValue.trim().toUpperCase();
-    if (parsedCode.includes('?ROOM=')) {
-      const parts = parsedCode.split('?ROOM=');
-      if (parts.length > 1) {
-        parsedCode = parts[1].substring(0, 6);
-      }
-    } else if (parsedCode.includes('/?ROOM=')) {
-      const parts = parsedCode.split('/?ROOM=');
-      if (parts.length > 1) {
-        parsedCode = parts[1].substring(0, 6);
-      }
-    }
-
-    if (parsedCode.length === 6) {
-      signalingClientRef.current?.joinRoom(parsedCode);
-      setShowScanner(false);
-      setScanValue('');
-    } else {
-      alert('Invalid code or URL detected. Make sure it contains a 6-character room code.');
-    }
-  };
 
   // Leave active session room
   const handleLeaveSession = () => {
@@ -880,7 +830,11 @@ function App() {
                   {/* Scan QR icon on left */}
                   <button
                     type="button"
-                    onClick={() => setShowScanner(true)}
+                    onClick={() => {
+                      soundHUD.playClick();
+                      setQrModalTab('scan');
+                      setShowQrModal(true);
+                    }}
                     className="p-2.5 hover:bg-white/5 text-zinc-400 hover:text-sky-300 rounded-full transition cursor-pointer"
                     title="Scan Room QR Code"
                   >
@@ -1010,11 +964,15 @@ function App() {
                       <span className="hidden sm:inline">Share</span>
                     </button>
 
-                    {/* QR Share code button */}
+                    {/* QR Sync Portal button */}
                     <button
-                      onClick={() => setShowQrModal(true)}
+                      onClick={() => {
+                        soundHUD.playClick();
+                        setQrModalTab('show');
+                        setShowQrModal(true);
+                      }}
                       className="p-2 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/20 rounded-lg transition duration-200 flex items-center gap-1 text-xs font-semibold cursor-pointer"
-                      title="Show Share QR Code"
+                      title="Open QR Sync Portal"
                     >
                       <QrCode className="w-4 h-4" />
                       QR
@@ -1383,147 +1341,17 @@ function App() {
 
       {/* Techy Modals Section */}
 
-      {/* 1. Share QR Code Modal */}
-      <AnimatePresence>
-        {showQrModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="relative w-full max-w-sm glassmorphism border border-sky-500/30 rounded-2xl p-6 overflow-hidden shadow-2xl"
-            >
-              <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-sky-400 to-transparent animate-pulse" />
-
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-sm font-bold text-white tracking-wider flex items-center gap-2 uppercase">
-                  <QrCode className="w-4.5 h-4.5 text-sky-400" />
-                  QR Sync Portal
-                </h3>
-                <button
-                  onClick={() => setShowQrModal(false)}
-                  className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-white/5 transition"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="flex flex-col items-center justify-center bg-slate-900/50 p-4 rounded-xl border border-white/5 mb-6">
-                {qrUrl ? (
-                  <img
-                    src={qrUrl}
-                    alt="Scan Room QR Code"
-                    className="w-48 h-48 rounded-lg shadow-lg border border-white/10"
-                  />
-                ) : (
-                  <div className="w-48 h-48 flex items-center justify-center">
-                    <Activity className="w-8 h-8 text-sky-400 animate-spin" />
-                  </div>
-                )}
-
-                <div className="mt-4 flex gap-4 text-center items-center justify-center text-xs font-semibold text-zinc-400">
-                  <Smartphone className="w-4 h-4 text-sky-400" />
-                  <span>Scan with phone or tablet to join mesh</span>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <button
-                  onClick={handleCopyLink}
-                  className="w-full bg-sky-500 hover:bg-sky-400 border border-sky-400/20 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-1.5 transition duration-200 cursor-pointer shadow-md"
-                >
-                  {isLinkCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  {isLinkCopied ? 'Link Copied' : 'Copy Direct Sync Link'}
-                </button>
-                <div className="text-[10px] text-zinc-500 bg-white/3 border border-white/5 rounded-lg p-2.5 flex items-start gap-1.5 font-medium leading-relaxed">
-                  <Info className="w-3.5 h-3.5 text-sky-400 shrink-0 mt-0.5" />
-                  <span>Direct Sync Link automatically sets room code and auto-connects mesh P2P handshakes across all devices.</span>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* 2. Mock Holographic QR Code Scanner */}
-      <AnimatePresence>
-        {showScanner && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="relative w-full max-w-sm glassmorphism border border-indigo-500/30 rounded-2xl p-6 overflow-hidden shadow-2xl"
-            >
-              <div
-                className="absolute left-0 w-full h-[2px] bg-sky-400/80 shadow-[0_0_10px_2px_rgba(56,189,248,0.5)] z-10 pointer-events-none"
-                style={{
-                  animation: 'sweep 3s ease-in-out infinite',
-                  top: '0%',
-                }}
-              />
-              <style>{`
-                @keyframes sweep {
-                  0%, 100% { top: 10%; }
-                  50% { top: 90%; }
-                }
-              `}</style>
-
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-sm font-bold text-white tracking-wider flex items-center gap-2 uppercase">
-                  <Activity className="w-4.5 h-4.5 text-indigo-400 animate-pulse" />
-                  Holographic HUD Scanner
-                </h3>
-                <button
-                  onClick={() => setShowScanner(false)}
-                  className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-white/5 transition"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* High-tech target frame */}
-              <div className="relative w-full aspect-square bg-slate-950/80 border border-white/5 rounded-xl flex flex-col items-center justify-center p-6 mb-6 overflow-hidden">
-                <div className="absolute top-3 left-3 w-4 h-4 border-t-2 border-l-2 border-sky-400" />
-                <div className="absolute top-3 right-3 w-4 h-4 border-t-2 border-r-2 border-sky-400" />
-                <div className="absolute bottom-3 left-3 w-4 h-4 border-b-2 border-l-2 border-sky-400" />
-                <div className="absolute bottom-3 right-3 w-4 h-4 border-b-2 border-r-2 border-sky-400" />
-
-                <div className="z-10 text-center space-y-3">
-                  <QrCode className="w-16 h-16 text-sky-400 mx-auto animate-pulse" />
-                  <p className="text-[10px] text-sky-300 font-mono tracking-widest uppercase">SCANNING DIRECT LINK / QR...</p>
-                  <p className="text-zinc-500 text-[10px] max-w-[200px] mx-auto leading-relaxed">
-                    Paste the copied share link or scan QR code with your camera to parse and join.
-                  </p>
-                </div>
-              </div>
-
-              {/* Paste scan input form */}
-              <form onSubmit={handleScanSubmit} className="space-y-3">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={scanValue}
-                    onChange={(e) => setScanValue(e.target.value)}
-                    placeholder="PASTE LINK OR CODE HERE"
-                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white text-xs outline-none focus:border-indigo-500/50 transition duration-200"
-                  />
-                  <button
-                    type="submit"
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl px-4 py-2 text-xs font-semibold shadow-md shadow-indigo-600/10 cursor-pointer transition"
-                  >
-                    Sync
-                  </button>
-                </div>
-                <div className="text-[9px] text-zinc-500 flex items-center justify-center gap-1 text-center">
-                  <Laptop className="w-3 h-3 text-zinc-500" />
-                  <span>Supports: share links, query parameter URLs, and plain 6-char codes.</span>
-                </div>
-              </form>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Unified QR Mesh Portal (Show QR Code & Real Camera Scanner) */}
+      <QrModal
+        isOpen={showQrModal}
+        onClose={() => setShowQrModal(false)}
+        roomCode={roomCode}
+        initialTab={qrModalTab}
+        onJoinRoom={(code) => {
+          signalingClientRef.current?.joinRoom(code);
+        }}
+        onCreateRoom={handleCreateSession}
+      />
 
       {/* 3. Holographic Sandbox / Previewer Modal */}
       <AnimatePresence>
