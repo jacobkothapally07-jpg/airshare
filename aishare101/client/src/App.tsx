@@ -847,7 +847,7 @@ function App() {
                     value={inputRoomCode}
                     onChange={(e) => setInputRoomCode(e.target.value.toUpperCase())}
                     placeholder="ENTER CODE"
-                    className="flex-1 bg-transparent text-center tracking-widest text-white text-xs font-mono font-bold outline-none uppercase placeholder-zinc-600 px-2"
+                    className="flex-1 bg-transparent text-center tracking-widest text-white text-base sm:text-xs font-mono font-bold outline-none uppercase placeholder-zinc-600 px-2"
                   />
 
                   {/* Submit arrow on right */}
@@ -1141,7 +1141,7 @@ function App() {
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   placeholder="Type a message to broadcast..."
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-indigo-500/50 transition duration-200"
+                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-base sm:text-sm outline-none focus:border-indigo-500/50 transition duration-200"
                 />
                 <button
                   type="submit"

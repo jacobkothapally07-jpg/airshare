@@ -506,7 +506,7 @@ export const QrModal: React.FC<QrModalProps> = ({
                     value={manualCode}
                     onChange={(e) => setManualCode(e.target.value)}
                     placeholder="PASTE LINK OR 6-DIGIT CODE"
-                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3.5 py-2 text-white text-xs outline-none focus:border-sky-500/50 uppercase font-mono tracking-wider transition"
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3.5 py-2 text-white text-base sm:text-xs outline-none focus:border-sky-500/50 uppercase font-mono tracking-wider transition"
                   />
                   <button
                     type="submit"
