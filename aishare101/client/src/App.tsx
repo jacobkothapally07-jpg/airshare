@@ -106,6 +106,9 @@ function App() {
   const [receivedBlobs, setReceivedBlobs] = useState<Array<{ name: string; blob: Blob }>>([]);
   const [activePreviewTab, setActivePreviewTab] = useState<'run' | 'code'>('run');
 
+  // Mobile responsive layout tab state
+  const [mobileTab, setMobileTab] = useState<'files' | 'chat'>('files');
+
   // Audio state
   const [isMuted, setIsMuted] = useState<boolean>(() => soundHUD.getMuted());
 
@@ -693,24 +696,24 @@ function App() {
       </AnimatePresence>
 
       {/* Top Navigation */}
-      <header className="glassmorphism sticky top-0 z-40 border-b border-white/5 py-4 px-6 md:px-12 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-gradient-to-br from-sky-500 to-indigo-600 rounded-xl glow-indigo text-white shadow-lg">
-            <Send className="w-5 h-5 rotate-[-30deg]" />
+      <header className="glassmorphism sticky top-0 z-40 border-b border-white/5 py-2.5 sm:py-3.5 px-3 sm:px-6 md:px-12 flex justify-between items-center gap-2">
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+          <div className="p-2 sm:p-2.5 bg-gradient-to-br from-sky-500 to-indigo-600 rounded-xl glow-indigo text-white shadow-lg shrink-0">
+            <Send className="w-4 h-4 sm:w-5 sm:h-5 rotate-[-30deg]" />
           </div>
-          <div>
-            <h1 className="text-xl font-bold bg-gradient-to-r from-white via-indigo-200 to-purple-300 bg-clip-text text-transparent m-0 select-none">
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-xl font-bold bg-gradient-to-r from-white via-indigo-200 to-purple-300 bg-clip-text text-transparent m-0 select-none truncate">
               AirShare
             </h1>
-            <p className="text-[10px] text-zinc-400 font-medium tracking-wide">MULTI-DEVICE P2P PORTAL</p>
+            <p className="hidden sm:block text-[9px] sm:text-[10px] text-zinc-400 font-medium tracking-wide">MULTI-DEVICE P2P PORTAL</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           {/* PWA Install Button */}
           <button
             onClick={handleInstallPWA}
-            className="hidden sm:flex items-center gap-1.5 text-xs bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 hover:border-indigo-500/40 px-3 py-1.5 rounded-lg transition duration-200 cursor-pointer font-medium"
+            className="hidden sm:flex items-center gap-1.5 text-xs bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 hover:border-indigo-500/40 px-2.5 sm:px-3 py-1.5 rounded-lg transition duration-200 cursor-pointer font-medium"
             title="Install AirShare Web App"
           >
             <DownloadCloud className="w-3.5 h-3.5 text-indigo-400" />
@@ -720,7 +723,7 @@ function App() {
           {/* Pro Modal Button */}
           <button
             onClick={() => setShowProModal(true)}
-            className="flex items-center gap-1.5 text-xs bg-gradient-to-r from-amber-500/10 to-orange-500/10 hover:from-amber-500/20 hover:to-orange-500/20 text-amber-300 border border-amber-500/20 hover:border-amber-500/40 px-3 py-1.5 rounded-lg transition duration-200 cursor-pointer font-semibold shadow-sm"
+            className="flex items-center gap-1 sm:gap-1.5 text-xs bg-gradient-to-r from-amber-500/10 to-orange-500/10 hover:from-amber-500/20 hover:to-orange-500/20 text-amber-300 border border-amber-500/20 hover:border-amber-500/40 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg transition duration-200 cursor-pointer font-semibold shadow-sm"
             title="AirShare Pro SaaS Preview"
           >
             <Crown className="w-3.5 h-3.5 text-amber-400" />
@@ -730,7 +733,7 @@ function App() {
           {/* Sound HUD Mute Toggle */}
           <button
             onClick={toggleMute}
-            className="p-2 bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 rounded-lg transition duration-200 cursor-pointer flex items-center justify-center"
+            className="p-1.5 sm:p-2 bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 rounded-lg transition duration-200 cursor-pointer flex items-center justify-center"
             title={isMuted ? 'Unmute Sound Effects' : 'Mute Sound Effects'}
           >
             {isMuted ? <VolumeX className="w-4 h-4 text-zinc-500" /> : <Volume2 className="w-4 h-4 text-sky-400" />}
@@ -739,7 +742,7 @@ function App() {
           {roomCode && (
             <>
               {/* Multi-Peer Status Pill */}
-              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold ${getStatusColor(connState)}`}>
+              <div className={`flex items-center gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full border text-xs font-semibold ${getStatusColor(connState)}`}>
                 <span className="relative flex h-2 w-2">
                   {connState === 'connected' && (
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -754,21 +757,22 @@ function App() {
                     }`}
                   ></span>
                 </span>
-                <span className="hidden md:inline">
+                <span className="text-[10px] sm:text-xs">
                   {connectedPeers.length > 0
-                    ? `${connectedPeers.length + 1} Devices in Mesh`
+                    ? `${connectedPeers.length + 1} Mesh`
                     : connState === 'connecting'
-                    ? 'Connecting...'
-                    : 'Awaiting Peers'}
+                    ? 'Connecting'
+                    : 'Awaiting'}
                 </span>
               </div>
 
               <button
                 onClick={handleLeaveSession}
-                className="text-xs bg-white/5 hover:bg-rose-500/20 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 text-zinc-300 px-3 py-1.5 rounded-lg transition duration-200 flex items-center gap-1.5 cursor-pointer"
+                className="text-xs bg-white/5 hover:bg-rose-500/20 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 text-zinc-300 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg transition duration-200 flex items-center gap-1 cursor-pointer"
+                title="Disconnect from Room"
               >
                 <X className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Disconnect</span>
+                <span className="hidden sm:inline">Exit</span>
               </button>
             </>
           )}
@@ -921,14 +925,55 @@ function App() {
             </motion.div>
           </div>
         ) : (
-          /* Active Session View: Two-pane layout */
-          <div className="w-full flex flex-col md:flex-row gap-6 h-[calc(100vh-120px)] md:h-[calc(100vh-130px)]">
-            {/* Left Pane - Coordination Chat & Universal Clipboard (40% width desktop) */}
-            <motion.div
-              initial={{ opacity: 0, x: -30 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="flex-[4] flex flex-col glassmorphism rounded-2xl overflow-hidden h-full shadow-2xl"
-            >
+          /* Active Session View: Two-pane layout with Mobile Segmented Switcher */
+          <div className="w-full flex flex-col gap-2.5 h-[calc(100dvh-85px)] sm:h-[calc(100dvh-100px)] md:h-[calc(100vh-125px)]">
+            {/* Mobile Segmented View Tabs (only visible on mobile screens) */}
+            <div className="flex md:hidden w-full bg-slate-900/90 p-1 rounded-xl border border-white/10 shrink-0 shadow-lg">
+              <button
+                type="button"
+                onClick={() => setMobileTab('files')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition ${
+                  mobileTab === 'files'
+                    ? 'bg-gradient-to-r from-sky-500 to-indigo-600 text-white shadow-md'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>Files & Queue</span>
+                {transfers.length > 0 && (
+                  <span className="bg-white/20 text-white text-[9px] px-1.5 py-0.2 rounded-full font-mono">
+                    {transfers.length}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMobileTab('chat')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition ${
+                  mobileTab === 'chat'
+                    ? 'bg-gradient-to-r from-sky-500 to-indigo-600 text-white shadow-md'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <ClipboardCheck className="w-3.5 h-3.5" />
+                <span>Chat & Clipboard</span>
+                {messages.length > 0 && (
+                  <span className="bg-white/20 text-white text-[9px] px-1.5 py-0.2 rounded-full font-mono">
+                    {messages.length}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            <div className="w-full flex-1 flex flex-col md:flex-row gap-4 md:gap-6 min-h-0 overflow-hidden">
+              {/* Left Pane - Coordination Chat & Universal Clipboard (40% width desktop) */}
+              <motion.div
+                initial={{ opacity: 0, x: -30 }}
+                animate={{ opacity: 1, x: 0 }}
+                className={`flex-[4] flex-col glassmorphism rounded-2xl overflow-hidden h-full shadow-2xl ${
+                  mobileTab === 'chat' ? 'flex' : 'hidden md:flex'
+                }`}
+              >
               {/* Room details header */}
               <div className="bg-white/5 border-b border-white/5 p-4 flex flex-col gap-2.5">
                 <div className="flex justify-between items-center">
@@ -1154,18 +1199,20 @@ function App() {
             <motion.div
               initial={{ opacity: 0, x: 30 }}
               animate={{ opacity: 1, x: 0 }}
-              className="flex-[6] flex flex-col gap-6 h-full overflow-y-auto"
+              className={`flex-[6] flex-col gap-4 sm:gap-6 h-full overflow-y-auto ${
+                mobileTab === 'files' ? 'flex' : 'hidden md:flex'
+              }`}
             >
               {/* Connection Banner if awaiting peers */}
               {connectedPeers.length === 0 && (
-                <div className="glassmorphism rounded-2xl p-6 border-l-4 border-amber-500 flex items-start gap-4 animate-pulse">
-                  <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg">
-                    <Activity className="w-5 h-5" />
+                <div className="glassmorphism rounded-2xl p-4 sm:p-6 border-l-4 border-amber-500 flex items-start gap-3 sm:gap-4 animate-pulse">
+                  <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg shrink-0">
+                    <Activity className="w-4 h-4 sm:w-5 sm:h-5" />
                   </div>
                   <div>
-                    <h3 className="text-sm font-bold text-white">Room Ready • Awaiting Devices</h3>
-                    <p className="text-xs text-zinc-400 mt-1">
-                      Share room code <span className="font-mono text-amber-300 font-semibold">{roomCode}</span> or let devices scan the QR code to join this mesh room. Multiple devices can connect simultaneously.
+                    <h3 className="text-xs sm:text-sm font-bold text-white">Room Ready • Awaiting Devices</h3>
+                    <p className="text-[11px] sm:text-xs text-zinc-400 mt-1">
+                      Share room code <span className="font-mono text-amber-300 font-semibold">{roomCode}</span> or let devices scan the QR code to join this mesh room.
                     </p>
                   </div>
                 </div>
@@ -1177,32 +1224,40 @@ function App() {
                 onDragOver={handleDrag}
                 onDragLeave={handleDrag}
                 onDrop={handleDrop}
-                className={`glassmorphism rounded-2xl p-8 border-2 border-dashed flex flex-col items-center justify-center gap-4 transition-all duration-300 min-h-[220px] relative overflow-hidden ${
+                className={`glassmorphism rounded-2xl p-6 sm:p-8 border-2 border-dashed flex flex-col items-center justify-center gap-3 sm:gap-4 transition-all duration-300 min-h-[180px] sm:min-h-[220px] relative overflow-hidden ${
                   dragActive ? 'border-indigo-400 bg-indigo-500/10 shadow-lg scale-[1.01]' : 'border-white/10 bg-white/3'
                 }`}
               >
-                <div className="p-4 bg-indigo-500/10 text-indigo-400 rounded-full border border-indigo-400/20 shadow-inner">
-                  <UploadCloud className={`w-10 h-10 ${dragActive ? 'scale-110 animate-bounce' : ''}`} />
+                {/* Mobile Tap to Upload Overlay */}
+                <label className="absolute inset-0 cursor-pointer z-0">
+                  <input type="file" multiple onChange={handleFileSelect} className="hidden" />
+                </label>
+
+                <div className="p-3 sm:p-4 bg-indigo-500/10 text-indigo-400 rounded-full border border-indigo-400/20 shadow-inner z-10 pointer-events-none">
+                  <UploadCloud className={`w-8 h-8 sm:w-10 sm:h-10 ${dragActive ? 'scale-110 animate-bounce' : ''}`} />
                 </div>
 
-                <div className="text-center">
-                  <h3 className="text-base font-bold text-white mb-1.5">Drag & Drop Files or Folders to Broadcast</h3>
-                  <p className="text-xs text-zinc-400 max-w-sm mx-auto">
-                    Transfers automatically stream in parallel to all connected devices in this room with CRC32 verification.
+                <div className="text-center z-10 pointer-events-none">
+                  <h3 className="text-sm sm:text-base font-bold text-white mb-1">
+                    <span className="hidden sm:inline">Drag & Drop Files or Folders</span>
+                    <span className="sm:hidden">Tap anywhere to Choose Files / Photos</span>
+                  </h3>
+                  <p className="text-[11px] sm:text-xs text-zinc-400 max-w-sm mx-auto">
+                    Direct P2P streaming between devices with zero cloud uploads.
                   </p>
                 </div>
 
                 {/* Input selection buttons */}
-                <div className="flex gap-3 mt-2 z-10">
-                  <label className="bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-200 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition duration-200 flex items-center gap-1.5 select-none shadow-md">
-                    <File className="w-3.5 h-3.5 text-indigo-400" />
-                    Select Files
+                <div className="flex gap-2.5 sm:gap-3 mt-1 sm:mt-2 z-10">
+                  <label className="bg-sky-500/15 border border-sky-500/30 hover:bg-sky-500/25 text-sky-200 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition duration-200 flex items-center gap-1.5 select-none shadow-md">
+                    <File className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Select Files</span>
                     <input type="file" multiple onChange={handleFileSelect} className="hidden" />
                   </label>
 
-                  <label className="bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-200 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition duration-200 flex items-center gap-1.5 select-none shadow-md">
+                  <label className="hidden sm:flex bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-200 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition duration-200 items-center gap-1.5 select-none shadow-md">
                     <Folder className="w-3.5 h-3.5 text-purple-400" />
-                    Select Folder
+                    <span>Select Folder</span>
                     <input
                       type="file"
                       // @ts-ignore
@@ -1218,41 +1273,41 @@ function App() {
 
               {/* Transfers Progress Section */}
               {transfers.length > 0 && (
-                <div className="glassmorphism rounded-2xl p-6 space-y-4 shadow-2xl">
+                <div className="glassmorphism rounded-2xl p-4 sm:p-6 space-y-4 shadow-2xl">
                   <div className="flex justify-between items-center border-b border-white/5 pb-3">
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <h3 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
                       <HardDriveUpload className="w-4 h-4 text-indigo-400" />
                       Live Multi-Peer Queue
                     </h3>
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex items-center gap-2">
                       {receivedBlobs.length > 1 && (
                         <button
                           onClick={handleDownloadAllZip}
-                          className="text-xs bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 text-sky-300 border border-sky-500/30 px-2.5 py-1 rounded-md font-semibold transition duration-200 cursor-pointer flex items-center gap-1.5 shadow-sm"
+                          className="text-[11px] sm:text-xs bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 text-sky-300 border border-sky-500/30 px-2 sm:px-2.5 py-1 rounded-md font-semibold transition duration-200 cursor-pointer flex items-center gap-1 shadow-sm"
                           title="Download all received session files as a ZIP archive"
                         >
-                          <Archive className="w-3.5 h-3.5 text-sky-400" />
+                          <Archive className="w-3 h-3 text-sky-400" />
                           <span>ZIP All ({receivedBlobs.length})</span>
                         </button>
                       )}
                       <button
                         onClick={handleCancelTransfer}
-                        className="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/30 px-2.5 py-1 rounded-md font-semibold transition duration-200 cursor-pointer"
+                        className="text-[11px] sm:text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/30 px-2 sm:px-2.5 py-1 rounded-md font-semibold transition duration-200 cursor-pointer"
                       >
                         Cancel
                       </button>
                     </div>
                   </div>
 
-                  <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1">
+                  <div className="space-y-3 sm:space-y-4 max-h-[300px] overflow-y-auto pr-1">
                     {transfers.map((t) => (
-                      <div key={t.fileId} className="bg-white/3 border border-white/5 p-4 rounded-xl space-y-3">
+                      <div key={t.fileId} className="bg-white/3 border border-white/5 p-3 sm:p-4 rounded-xl space-y-2.5 sm:space-y-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-center gap-2.5 min-w-0">
                             {t.name.includes('/') ? (
-                              <Folder className="w-5 h-5 text-purple-400 shrink-0" />
+                              <Folder className="w-4 h-4 sm:w-5 sm:h-5 text-purple-400 shrink-0" />
                             ) : (
-                              <FileText className="w-5 h-5 text-indigo-400 shrink-0" />
+                              <FileText className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-400 shrink-0" />
                             )}
                             <div className="min-w-0">
                               <span className="text-xs font-semibold text-white block truncate">{t.name}</span>
@@ -1271,7 +1326,7 @@ function App() {
                               </button>
                             )}
                             <span
-                              className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              className={`text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full ${
                                 t.status === 'completed'
                                   ? 'bg-emerald-400/10 text-emerald-400 border border-emerald-400/20'
                                   : t.status === 'failed'
@@ -1322,6 +1377,7 @@ function App() {
               )}
             </motion.div>
           </div>
+        </div>
         )}
       </main>
 
