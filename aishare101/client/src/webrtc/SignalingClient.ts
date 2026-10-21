@@ -7,6 +7,7 @@ export interface SignalingEvents {
   onSignal: (senderId: string, signalData: any) => void;
   onError: (error: string) => void;
   onPinError?: (info: { roomCode: string; message: string }) => void;
+  onConnect?: () => void;
   onDisconnect: () => void;
 }
 
@@ -18,6 +19,10 @@ export class SignalingClient {
     this.url = url;
   }
 
+  public isConnected(): boolean {
+    return Boolean(this.socket?.connected);
+  }
+
   public connect(events: SignalingEvents): void {
     if (this.socket) {
       return;
@@ -25,12 +30,19 @@ export class SignalingClient {
 
     console.log(`Connecting to signaling server at: ${this.url}`);
     this.socket = io(this.url, {
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
       autoConnect: true,
+      reconnectionAttempts: 10,
+      timeout: 10000,
     });
 
     this.socket.on('connect', () => {
       console.log(`Connected to signaling server with socket ID: ${this.socket?.id}`);
+      events.onConnect?.();
+    });
+
+    this.socket.on('connect_error', (err) => {
+      console.warn('Signaling server connection error:', err.message);
     });
 
     this.socket.on('room-joined', ({ roomCode, peers, hasPin }: { roomCode: string; peers: string[]; hasPin?: boolean }) => {

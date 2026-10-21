@@ -46,8 +46,13 @@ import { getFilesFromDroppedItems } from './utils/directory';
 import type { FileWithRelativePath } from './utils/directory';
 import { createZipArchive } from './utils/zip';
 
-// Construct server URL dynamically to allow local network testing (e.g. mobile peer on WiFi)
-const SIGNAL_SERVER_URL = import.meta.env.VITE_SIGNAL_SERVER_URL || `${window.location.protocol}//${window.location.hostname}:4000`;
+// Construct server URL dynamically with automatic production Render fallback
+const SIGNAL_SERVER_URL =
+  import.meta.env.VITE_SIGNAL_SERVER_URL ||
+  (typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? `${window.location.protocol}//${window.location.hostname}:4000`
+    : 'https://airshare-uhi5.onrender.com');
 
 function App() {
   // Connection states
@@ -55,6 +60,8 @@ function App() {
   const [inputRoomCode, setInputRoomCode] = useState<string>('');
   const [connectedPeers, setConnectedPeers] = useState<string[]>([]);
   const [connState, setConnState] = useState<ConnectionState>('idle');
+  const [isServerReady, setIsServerReady] = useState<boolean>(false);
+  const [isCreatingRoom, setIsCreatingRoom] = useState<boolean>(false);
   const [senderName, setSenderName] = useState<string>(() => {
     // Generate a default random username on load
     return `Peer_${Math.floor(1000 + Math.random() * 9000)}`;
@@ -245,8 +252,12 @@ function App() {
 
     // Connect to Signaling Server
     signalingClient.connect({
+      onConnect: () => {
+        setIsServerReady(true);
+      },
       onRoomJoined: (code, peers, hasPin) => {
         setRoomCode(code);
+        setIsCreatingRoom(false);
         setIsRoomPinProtected(Boolean(hasPin));
         setShowPinModal(false);
         setPinModalError('');
@@ -262,6 +273,7 @@ function App() {
         peerManager.handleRoomJoined(peers);
       },
       onPinError: ({ roomCode: errCode, message }) => {
+        setIsCreatingRoom(false);
         soundHUD.playFailure();
         setPendingPinRoomCode(errCode);
         setPinModalError(message);
@@ -297,10 +309,13 @@ function App() {
         peerManager.handleSignal(senderId, signalData);
       },
       onError: (err) => {
+        setIsCreatingRoom(false);
         console.error('Signaling server error:', err);
         alert(`Signaling Error: ${err}`);
       },
       onDisconnect: () => {
+        setIsServerReady(false);
+        setIsCreatingRoom(false);
         setRoomCode('');
         setConnectedPeers([]);
         setConnState('idle');
@@ -502,12 +517,16 @@ function App() {
   // Generate a room code and join (with optional PIN)
   const handleCreateSession = () => {
     soundHUD.playClick();
+    setIsCreatingRoom(true);
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
     for (let i = 0; i < 6; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     signalingClientRef.current?.joinRoom(code, roomPin.trim() || undefined);
+    setTimeout(() => {
+      setIsCreatingRoom(false);
+    }, 12000);
   };
 
   // Join existing session code (with optional PIN)
@@ -820,13 +839,31 @@ function App() {
                 </p>
               </div>
 
+              {/* Mesh connection status badge */}
+              <div className="flex items-center gap-2 text-[10px] mb-3 font-medium">
+                <span className={`w-2 h-2 rounded-full ${isServerReady ? 'bg-emerald-400' : 'bg-amber-400 animate-ping'}`} />
+                <span className={isServerReady ? 'text-emerald-400/90' : 'text-amber-300'}>
+                  {isServerReady ? 'Signaling Mesh Active • Instant Room Creation' : 'Connecting to signaling network...'}
+                </span>
+              </div>
+
               {/* Create New Room Button */}
               <button
                 onClick={handleCreateSession}
-                className="w-full max-w-xs bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white rounded-full py-3.5 px-8 text-sm font-semibold shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 border border-sky-400/20 transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 mb-6"
+                disabled={isCreatingRoom}
+                className="w-full max-w-xs bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 disabled:opacity-75 text-white rounded-full py-3.5 px-8 text-sm font-semibold shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 border border-sky-400/20 transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 mb-6"
               >
-                <Activity className="w-4 h-4 text-sky-200 animate-pulse" />
-                <span>Create Shared Room {roomPin.length >= 4 && '🔒'}</span>
+                {isCreatingRoom ? (
+                  <>
+                    <Activity className="w-4 h-4 text-sky-200 animate-spin" />
+                    <span>Creating Room...</span>
+                  </>
+                ) : (
+                  <>
+                    <Activity className="w-4 h-4 text-sky-200 animate-pulse" />
+                    <span>Create Shared Room {roomPin.length >= 4 && '🔒'}</span>
+                  </>
+                )}
               </button>
 
               <div className="text-[9px] text-zinc-500 font-extrabold uppercase tracking-widest mb-6">

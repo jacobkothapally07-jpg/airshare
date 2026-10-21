@@ -2,3 +2,11 @@
   base = "aishare101/client"
   command = "npm run build"
   publish = "dist"
+
+[build.environment]
+  VITE_SIGNAL_SERVER_URL = "https://airshare-uhi5.onrender.com"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
